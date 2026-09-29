@@ -16,8 +16,8 @@
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef FLIR_BOSON_USB2_BOSONCAMERA_HPP
-#define FLIR_BOSON_USB2_BOSONCAMERA_HPP
+#ifndef FLIR_BOSON_USB_BOSONCAMERA_HPP
+#define FLIR_BOSON_USB_BOSONCAMERA_HPP
 
 #include <string>
 #include <cmath>
@@ -38,7 +38,7 @@
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 
-namespace flir_boson_usb2
+namespace flir_boson_usb
 {
 
 enum Encoding { 
@@ -101,6 +101,6 @@ private:
   SensorTypes sensor_type_;
 };
 
-}  // namespace flir_boson_usb2
+}  // namespace flir_boson_usb
 
-#endif  // FLIR_BOSON_USB2_BOSONCAMERA_HPP
+#endif  // FLIR_BOSON_USB_BOSONCAMERA_HPP

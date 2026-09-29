@@ -16,10 +16,10 @@
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "flir_boson_usb2/BosonCamera.hpp"
+#include "flir_boson_usb/BosonCamera.h"
 #include "rclcpp_components/register_node_macro.hpp"
 
-namespace flir_boson_usb2
+namespace flir_boson_usb
 {
 
 using namespace cv;
@@ -448,6 +448,6 @@ void BosonCamera::captureAndPublish()
   image_pub_.publish(*cv_img.toImageMsg(), *ci);
 }
 
-}  // namespace flir_boson_usb2
+}  // namespace flir_boson_usb
 
-RCLCPP_COMPONENTS_REGISTER_NODE(flir_boson_usb2::BosonCamera)
+RCLCPP_COMPONENTS_REGISTER_NODE(flir_boson_usb::BosonCamera)

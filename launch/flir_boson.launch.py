@@ -12,7 +12,7 @@ def generate_launch_description():
 
       # A calibration shipped with this package (for quick testing only,
       # intrinsics are NOT guaranteed to match your physical camera):
-      camera_info_url:=package://flir_boson_usb2/example_calibrations/Boson640.yaml
+      camera_info_url:=package://flir_boson_usb/example_calibrations/Boson640.yaml
 
       # Your own calibration file on disk:
       camera_info_url:=file:///home/user/calibrations/my_boson.yaml
@@ -81,7 +81,7 @@ def generate_launch_description():
     )
 
     boson_camera_node = Node(
-        package='flir_boson_usb2',
+        package='flir_boson_usb',
         executable='boson_camera_node',
         name='flir_boson_usb_node',
         namespace=LaunchConfiguration('namespace'),

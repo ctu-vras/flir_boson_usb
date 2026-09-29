@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(flir_boson_usb2)
+project(flir_boson_usb)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic -std=c++17)
@@ -22,7 +22,7 @@ include_directories(
 )
 
 # Create the Component Library
-add_library(boson_camera_component SHARED src/BosonCamera.cpp)
+add_library(boson_camera_component SHARED src/nodelets/BosonCamera.cpp)
 target_compile_definitions(boson_camera_component PRIVATE "BOSON_CAMERA_BUILDING_DLL")
 
 ament_target_dependencies(boson_camera_component
@@ -38,7 +38,7 @@ target_link_libraries(boson_camera_component ${OpenCV_LIBRARIES})
 
 # Register the Component and create the executable
 rclcpp_components_register_node(boson_camera_component
-  PLUGIN "flir_boson_usb2::BosonCamera"
+  PLUGIN "flir_boson_usb::BosonCamera"
   EXECUTABLE boson_camera_node
 )
 

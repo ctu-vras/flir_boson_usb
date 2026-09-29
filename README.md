@@ -1,4 +1,4 @@
-# FLIR Boson USB ROS 2 Driver (`flir_boson_usb2`)
+# FLIR Boson USB ROS 2 Driver (`flir_boson_usb`)
 
 A ROS 2 (Humble) USB camera driver for the FLIR Boson thermal camera utilizing V4L2 and OpenCV.
 
@@ -25,7 +25,7 @@ sudo usermod -aG video $USER
 
 ```bash
 cd ~/ros2_ws
-colcon build --packages-select flir_boson_usb2 --symlink-install
+colcon build --packages-select flir_boson_usb --symlink-install
 source install/setup.bash
 ```
 ## Device Verification
@@ -46,7 +46,7 @@ Boson: FLIR Video (usb-0000:00:14.0-7.3):
 Use the provided Python launch file. Arguments can be overridden per-camera:
 
 ```bash
-ros2 launch flir_boson_usb2 flir_boson.launch.py \
+ros2 launch flir_boson_usb flir_boson.launch.py \
     dev:=/dev/video0 \
     video_mode:=YUV \
     frame_rate:=30.0
@@ -110,7 +110,7 @@ Both topics are advertised with `rclcpp::SensorDataQoS` (best-effort). `image_tr
 This driver publishes empty `CameraInfo` by default. To load a calibration, set `camera_info_url`:
 
 ```bash
-ros2 launch flir_boson_usb2 flir_boson.launch.py \
+ros2 launch flir_boson_usb flir_boson.launch.py \
     camera_info_url:=file:///home/user/my_boson.yaml
 ```
 
