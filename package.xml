@@ -1,30 +1,26 @@
 <?xml version="1.0"?>
-<package format="2">
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
   <name>flir_boson_usb</name>
-  <version>1.2.1</version>
-  <description>A simple USB camera driver for the FLIR BOSON using OpenCV</description>
+  <version>2.0.0</version>
+  <description>ROS 2 USB camera driver for the FLIR BOSON using OpenCV and V4L2</description>
+  <maintainer email="akhilmjohn@gmail.com">Akhil John</maintainer>
+  <author>Joe Driscoll</author>
+  <author>Joshua Whitley</author>
   <license>MIT</license>
 
-  <maintainer email="software@autonomoustuff.com">AutonomouStuff Software Development Team</maintainer>
-  <author email="jdriscoll@autonomoustuff.com">Joe Driscoll</author>
-  <author email="jwhitley@autonomoustuff.com">Joshua Whitley</author>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <url type="website">http://wiki.ros.org/flir_boson_usb</url>
-  <url type="repository">https://github.com/astuff/flir_boson_usb</url>
-  <url type="bugtracker">https://github.com/astuff/flir_boson_usb/issues</url>
-
-  <buildtool_depend>catkin</buildtool_depend>
-
-  <build_depend>roslint</build_depend>
-
-  <depend>roscpp</depend>
-  <depend>nodelet</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
   <depend>cv_bridge</depend>
   <depend>camera_info_manager</depend>
   <depend>image_transport</depend>
   <depend>sensor_msgs</depend>
 
+  <exec_depend>v4l-utils</exec_depend>
+
   <export>
-    <nodelet plugin="${prefix}/nodelet_plugins.xml"/>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

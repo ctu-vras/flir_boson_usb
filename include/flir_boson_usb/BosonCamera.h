@@ -1,16 +1,14 @@
 /*
- * Copyright © 2019 AutonomouStuff, LLC
- * 
- * Permission is hereby granted, free of charge, to any person obtaining a copy of this
+ * Copyright (c) 2018 FLIR Systems, INC
+ * Copyright (c) 2018-2019 AutonomouStuff, LLC
+ * * Permission is hereby granted, free of charge, to any person obtaining a copy of this
  * software and associated documentation files (the “Software”), to deal in the Software
  * without restriction, including without limitation the rights to use, copy, modify,
  * merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to the following conditions:
- * 
- * The above copyright notice and this permission notice shall be included in all copies
+ * * The above copyright notice and this permission notice shall be included in all copies
  * or substantial portions of the Software.
- * 
- * THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+ * * THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
  * PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
  * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
@@ -18,94 +16,91 @@
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef FLIR_BOSON_USB_BOSONCAMERA_H
-#define FLIR_BOSON_USB_BOSONCAMERA_H
+#ifndef FLIR_BOSON_USB_BOSONCAMERA_HPP
+#define FLIR_BOSON_USB_BOSONCAMERA_HPP
 
-// C++ Includes
 #include <string>
-
-// Linux system includes
+#include <cmath>
+#include <memory>
+#include <vector>
+#include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <asm/types.h>
-#include <sys/mman.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <linux/videodev2.h>
-
-// OpenCV Includes
+#include <sys/mman.h>
 #include <opencv2/opencv.hpp>
 
-// ROS Includes
-#include <ros/ros.h>
-#include <nodelet/nodelet.h>
-#include <cv_bridge/cv_bridge.h>
-#include <image_transport/image_transport.h>
-#include <camera_info_manager/camera_info_manager.h>
-
-#include <sensor_msgs/CameraInfo.h>
-#include <sensor_msgs/Image.h>
+#include "rclcpp/rclcpp.hpp"
+#include "cv_bridge/cv_bridge.h"
+#include "image_transport/image_transport.hpp"
+#include "camera_info_manager/camera_info_manager.hpp"
+#include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/camera_info.hpp"
 
 namespace flir_boson_usb
 {
 
-enum Encoding
-{
-  YUV = 0,
-  RAW16 = 1
+enum Encoding { 
+  YUV = 0, 
+  RAW16_AGC = 1, 
+  RAW16_PURE = 2 
 };
 
-enum SensorTypes
+enum SensorTypes { Boson320, Boson640 };
+
+class BosonCamera : public rclcpp::Node
 {
-  Boson320,
-  Boson640
-};
+public:
+  explicit BosonCamera(const rclcpp::NodeOptions & options);
+  ~BosonCamera() override;
 
-class BosonCamera : public nodelet::Nodelet
-{
-  public:
-    BosonCamera();
-    ~BosonCamera();
+private:
+  void init();
+  bool openCamera();
+  bool closeCamera();
+  void captureAndPublish();
 
-  private:
-    virtual void onInit();
-    void agcBasicLinear(const cv::Mat& input_16,
-                        cv::Mat* output_8,
-                        const int& height,
-                        const int& width);
-    bool openCamera();
-    bool closeCamera();
-    void captureAndPublish(const ros::TimerEvent& evt);
+  bool isRaw16() const {
+  return video_mode_ == RAW16_PURE || video_mode_ == RAW16_AGC;
+  }
+  
+  // Custom processing utilities
+  void agc(const cv::Mat& input_16, cv::Mat& output_8, double clip_low_pct, double clip_high_pct);
 
-    ros::NodeHandle nh, pnh;
-    std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info;
-    std::shared_ptr<image_transport::ImageTransport> it;
-    image_transport::CameraPublisher image_pub;
-    cv_bridge::CvImage cv_img;
-    sensor_msgs::ImagePtr pub_image;
-    ros::Timer capture_timer;
-    int32_t width, height;
-    int32_t fd;
-    int32_t i;
-    struct v4l2_capability cap;
-    int32_t frame = 0;                // First frame number enumeration
-    int8_t thermal_sensor_name[20];  // To store the sensor name
-    struct v4l2_buffer bufferinfo;
-    void* buffer_start;
+  // ROS Node variables
+  std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_;
+  image_transport::CameraPublisher image_pub_;
+  rclcpp::TimerBase::SharedPtr init_timer_;
+  rclcpp::TimerBase::SharedPtr capture_timer_;
 
-    cv::Mat thermal16, thermal16_linear, thermal16_linear_zoom,
-            thermal_rgb_zoom, thermal_luma, thermal_rgb;
+  // Hardware V4L2 variables
+  int32_t width_, height_, fd_;
+  struct v4l2_capability cap_;
+  
+  struct V4L2Buffer {
+      void* start;
+      size_t length;
+  };
+  std::vector<V4L2Buffer> buffers_; // 4-buffer Ring Queue
+  int expected_height_;
+  size_t bytesperline_;
+  
+  // OpenCV Mats (Pre-allocated to prevent memory churn)
+  cv::Mat thermal16_linear_, thermal16_linear_zoom_, thermal_rgb_, hist_;
 
-    // Default Program options
-    std::string frame_id, dev_path, camera_info_url,
-      video_mode_str, sensor_type_str;
-    float frame_rate;
-    Encoding video_mode;
-    bool zoom_enable;
-    SensorTypes sensor_type;
+  // Parameters
+  std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
+  double frame_rate_;
+  Encoding video_mode_;
+  bool zoom_enable_;
+  bool publish_color_;
+  bool is_yv12_;
+  double raw16_agc_low_pct_;
+  double raw16_agc_high_pct_;
+  SensorTypes sensor_type_;
 };
 
 }  // namespace flir_boson_usb
 
-#endif  // FLIR_BOSON_USB_BOSONCAMERA_H
+#endif  // FLIR_BOSON_USB_BOSONCAMERA_HPP
