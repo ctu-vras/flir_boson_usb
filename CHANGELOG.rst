@@ -2,6 +2,10 @@
 Changelog for package flir_boson_usb
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+2.0.0 (2026-05-28)
+------------------
+* ROS 2 Humble support (https://github.com/akhilj95/flir_boson_usb2)
+
 1.2.1 (2019-07-01)
 ------------------
 * Merge pull request `#3 <https://github.com/astuff/flir_boson_usb/issues/3>`_ from valgur/patch-1

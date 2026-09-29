@@ -22,7 +22,7 @@ include_directories(
 )
 
 # Create the Component Library
-add_library(boson_camera_component SHARED src/nodelets/BosonCamera.cpp)
+add_library(boson_camera_component SHARED src/BosonCamera.cpp)
 target_compile_definitions(boson_camera_component PRIVATE "BOSON_CAMERA_BUILDING_DLL")
 
 ament_target_dependencies(boson_camera_component

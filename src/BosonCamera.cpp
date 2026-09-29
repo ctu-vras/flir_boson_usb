@@ -16,7 +16,7 @@
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "flir_boson_usb/BosonCamera.h"
+#include "flir_boson_usb/BosonCamera.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 
 namespace flir_boson_usb
