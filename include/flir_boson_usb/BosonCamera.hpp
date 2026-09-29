@@ -32,7 +32,7 @@
 #include <opencv2/opencv.hpp>
 
 #include "rclcpp/rclcpp.hpp"
-#include "cv_bridge/cv_bridge.h"
+#include "cv_bridge/cv_bridge.hpp"
 #include "image_transport/image_transport.hpp"
 #include "camera_info_manager/camera_info_manager.hpp"
 #include "sensor_msgs/msg/image.hpp"
