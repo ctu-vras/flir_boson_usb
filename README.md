@@ -1,3 +1,10 @@
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
+
 # FLIR Boson USB ROS Driver (`flir_boson_usb`)
 
 A ROS 1 and ROS 2 USB camera driver for the FLIR Boson thermal camera utilizing V4L2 and OpenCV.

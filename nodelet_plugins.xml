@@ -1,4 +1,10 @@
 <?xml version="1.0"?>
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
 <library path="lib/libBosonCamera">
   <class name="flir_boson_usb/BosonCamera" type="flir_boson_usb::BosonCamera" base_class_type="nodelet::Nodelet">
     <description>

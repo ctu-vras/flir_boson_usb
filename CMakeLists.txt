@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+# SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+# SPDX-FileCopyrightText: Czech Technical University in Prague
+
 cmake_minimum_required(VERSION 3.10.2)
 project(flir_boson_usb)
 

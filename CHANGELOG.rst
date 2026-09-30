@@ -1,3 +1,8 @@
+.. SPDX-License-Identifier: MIT
+.. SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+.. SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+.. SPDX-FileCopyrightText: Czech Technical University in Prague
+
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Changelog for package flir_boson_usb
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
