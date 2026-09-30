@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+# ROS 2 launch file for a Boson sensor.
 
 def generate_launch_description():
     """Launch the FLIR Boson USB camera driver.

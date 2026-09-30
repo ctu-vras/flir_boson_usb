@@ -3,16 +3,24 @@
 <package format="3">
   <name>flir_boson_usb</name>
   <version>2.0.0</version>
-  <description>ROS 2 USB camera driver for the FLIR BOSON using OpenCV and V4L2</description>
+  <description>USB camera driver for the FLIR BOSON using OpenCV and V4L2</description>
   <maintainer email="akhilmjohn@gmail.com">Akhil John</maintainer>
   <author>Joe Driscoll</author>
   <author>Joshua Whitley</author>
   <license>MIT</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend condition="$ROS_VERSION == 1">catkin</buildtool_depend>
+  <buildtool_depend condition="$ROS_VERSION == 2">ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclcpp_components</depend>
+  <depend condition="$ROS_VERSION == 1">roscpp</depend>
+  <depend condition="$ROS_VERSION == 1">nodelet</depend>
+  <depend condition="$ROS_VERSION == 1">pluginlib</depend>
+  <depend condition="$ROS_VERSION == 1">dynamic_reconfigure</depend>
+
+  <depend condition="$ROS_VERSION == 2">rclcpp</depend>
+  <depend condition="$ROS_VERSION == 2">rclcpp_components</depend>
+
+  <depend>cras_cpp_common</depend>
   <depend>cv_bridge</depend>
   <depend>camera_info_manager</depend>
   <depend>image_transport</depend>
@@ -21,6 +29,8 @@
   <exec_depend>v4l-utils</exec_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <nodelet plugin="${prefix}/nodelet_plugins.xml" condition="$ROS_VERSION == 1"/>
+    <build_type condition="$ROS_VERSION == 1">catkin</build_type>
+    <build_type condition="$ROS_VERSION == 2">ament_cmake</build_type>
   </export>
 </package>
