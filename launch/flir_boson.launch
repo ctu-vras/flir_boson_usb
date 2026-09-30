@@ -4,6 +4,7 @@
   <arg name="namespace" default="flir_boson"/>
   <arg name="nodelet_manager" default="" />
   <arg name="run_nodelet_manager" default="false" />
+
   <arg name="rectify" default="false" />
 
   <arg name="frame_id" default="boson_camera"/>
