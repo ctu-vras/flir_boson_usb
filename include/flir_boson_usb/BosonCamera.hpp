@@ -69,7 +69,7 @@ private:
   // ROS Node variables
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_;
   image_transport::CameraPublisher image_pub_;
-  image_transport::Publisher image_pub_8_, image_pub_heatmap_, image_pub_temp_;
+  image_transport::Publisher image_pub_8_, image_pub_heatmap_, image_pub_temp_, image_pub_8_norm_;
   rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr max_temp_pub_, min_temp_pub_, ptr_temp_pub_;
   rclcpp::TimerBase::SharedPtr init_timer_;
   rclcpp::TimerBase::SharedPtr capture_timer_;
@@ -91,7 +91,7 @@ private:
 
   // OpenCV Mats (Pre-allocated to prevent memory churn)
   cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_,
-    thermal8_heatmap_, thermal8_temp_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
+    thermal8_heatmap_, thermal8_temp_, thermal8_norm_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
 
   sensor_msgs::msg::Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
 
@@ -109,6 +109,7 @@ private:
   // Dynamic parameters
   int point_x_, point_y_;
   int max_temp_limit_, min_temp_limit_;
+  double norm_margin_;
   std::mutex mutex_;
   OnSetParametersCallbackHandle::SharedPtr params_cb_;
 };

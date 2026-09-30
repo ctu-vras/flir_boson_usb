@@ -44,6 +44,7 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
   point_y_ = this->declare_parameter("point_y", 0);
   max_temp_limit_ = this->declare_parameter("max_temp_limit", 50);
   min_temp_limit_ = this->declare_parameter("min_temp_limit", 20);
+  norm_margin_= this->declare_parameter("norm_margin", 20.0);
 
   params_cb_ = this->add_on_set_parameters_callback(
     [this](const std::vector<rclcpp::Parameter>& parameters) {
@@ -60,6 +61,9 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
         } else if (param.get_name() == "min_temp_limit") {
           std::lock_guard<std::mutex> lock(mutex_);
           min_temp_limit_ = param.as_int();
+        } else if (param.get_name() == "norm_margin") {
+          std::lock_guard<std::mutex> lock(mutex_);
+          norm_margin_ = param.as_double();
         }
       }
       rcl_interfaces::msg::SetParametersResult result;
@@ -98,6 +102,8 @@ void BosonCamera::init()
   image_pub_8_ = image_transport::create_publisher(
     this, "image8", rclcpp::SensorDataQoS().get_rmw_qos_profile());
   if (publish_color_) {
+    image_pub_8_norm_ = image_transport::create_publisher(
+      this, "image8_norm", rclcpp::SensorDataQoS().get_rmw_qos_profile());
     image_pub_heatmap_ = image_transport::create_publisher(
       this, "image_heatmap", rclcpp::SensorDataQoS().get_rmw_qos_profile());
     image_pub_temp_ = image_transport::create_publisher(
@@ -380,6 +386,7 @@ bool BosonCamera::openCamera()
   // Pre-allocate output Mats to expected_height_
   thermal16_linear_ = cv::Mat(expected_height_, width_, CV_8UC1);
   thermal8_linear_ = cv::Mat(expected_height_, width_, CV_16UC1);
+  thermal8_norm_ = Mat(expected_height_, width_, CV_8U, 1);
   if (video_mode_ == YUV && publish_color_) {
     thermal_rgb_ = cv::Mat(height_, width_, CV_8UC3);
   }
@@ -510,6 +517,23 @@ void BosonCamera::captureAndPublish()
     }
     cv_img.encoding = "mono8";
     image_pub_8_.publish(cv_img.toImageMsg());
+
+    // 8bit image (auto range)
+    double min, max;
+    minMaxLoc(thermal8_linear_, &min, &max);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      double min_threshold = std::max(min - norm_margin_, 0.0);
+      double max_threshold = std::min(max + norm_margin_, 255.0);
+      if ((max_threshold - min_threshold) != 0) {
+        thermal8_norm_ = (thermal8_linear_ - min_threshold) * (255 - 0) / (max_threshold - min_threshold);
+      } else {
+        thermal8_norm_ = thermal8_linear_;
+      }
+    }
+    cv_img.image = thermal8_norm_;
+    cv_img.encoding = "mono8";
+    image_pub_8_norm_.publish(cv_img.toImageMsg());
 
     if (publish_color_) {
       cv::applyColorMap(cv_img.image, thermal8_heatmap_, cv::COLORMAP_JET);
