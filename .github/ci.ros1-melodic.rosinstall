@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+# SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+# SPDX-FileCopyrightText: Czech Technical University in Prague
+- git:
+    local-name: ros-utils
+    uri: https://github.com/ctu-vras/ros-utils.git
+    version: master
