@@ -226,6 +226,13 @@ void BosonCamera::agc(
     *max_temp = max_val / 100. - 273.15;
     *min_temp = min_val / 100. - 273.15;
 
+    if (max_temp_limit_ < min_temp_limit_)
+    {
+      std::stringstream err_msg_ss;
+      err_msg_ss << "max_temp_limit should be larger than min_temp_limit ";
+      err_msg_ss << "(max_temp_limit: " << max_temp_limit_ << ", min_temp_limit: " << min_temp_limit_ << ")";
+      throw std::range_error(err_msg_ss.str());
+    }
     {
       std::lock_guard<std::mutex> lock(mutex_);
       max_val = (max_temp_limit_ + 273.15) * 100;
@@ -435,7 +442,13 @@ void BosonCamera::captureAndPublish()
   if (video_mode_ == RAW16) {
     cv::Mat thermal16(height_, width_, CV_16UC1, current_buffer, bytesperline_);
     cv::Mat thermal16_cropped = thermal16(cv::Rect(0, 0, width_, expected_height_));
-    agc(thermal16_cropped, thermal8_linear_, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_, &max_temp, &min_temp);
+    try {
+      agc(thermal16_cropped, thermal8_linear_, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_, &max_temp, &min_temp);
+    }
+    catch (const std::range_error& e) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000, "AGC error: %s", e.what());
+      return;
+    }
   }
   else { // YUV
     cv::Mat thermal_luma(height_ + height_ / 2, width_, CV_8UC1, current_buffer);
