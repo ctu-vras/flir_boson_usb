@@ -22,6 +22,7 @@
 #include <string>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <poll.h>
 #include <fcntl.h>
@@ -82,7 +83,9 @@ private:
   std::vector<V4L2Buffer> buffers_; // 4-buffer Ring Queue
   int expected_height_;
   size_t bytesperline_;
-  double max_temp, min_temp;
+  double max_temp_, min_temp_, ptr_temp_;
+
+  cv::Point temp_ptr_;
 
   // OpenCV Mats (Pre-allocated to prevent memory churn)
   cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_,
@@ -98,6 +101,12 @@ private:
   double raw16_agc_low_pct_;
   double raw16_agc_high_pct_;
   SensorTypes sensor_type_;
+
+  // Dynamic parameters
+  int point_x_, point_y_;
+  int max_temp_limit_, min_temp_limit_;
+  std::mutex mutex_;
+  OnSetParametersCallbackHandle::SharedPtr params_cb_;
 };
 
 }  // namespace flir_boson_usb

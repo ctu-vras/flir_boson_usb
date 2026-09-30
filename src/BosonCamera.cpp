@@ -40,6 +40,32 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
   publish_color_ = this->declare_parameter("publish_color", false);
   sensor_type_str_ = this->declare_parameter("sensor_type", "Boson_640");
   camera_info_url_ = this->declare_parameter("camera_info_url", "");
+  point_x_ = this->declare_parameter("point_x", 0);
+  point_y_ = this->declare_parameter("point_y", 0);
+  max_temp_limit_ = this->declare_parameter("max_temp_limit", 50);
+  min_temp_limit_ = this->declare_parameter("min_temp_limit", 20);
+
+  params_cb_ = this->add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter>& parameters) {
+      for (const auto& param : parameters) {
+        if (param.get_name() == "point_x") {
+          std::lock_guard<std::mutex> lock(mutex_);
+          point_x_ = param.as_int();
+        } else if (param.get_name() == "point_y") {
+          std::lock_guard<std::mutex> lock(mutex_);
+          point_y_ = param.as_int();
+        } else if (param.get_name() == "max_temp_limit") {
+          std::lock_guard<std::mutex> lock(mutex_);
+          max_temp_limit_ = param.as_int();
+        } else if (param.get_name() == "min_temp_limit") {
+          std::lock_guard<std::mutex> lock(mutex_);
+          min_temp_limit_ = param.as_int();
+        }
+      }
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      return result;
+    });
 
   raw16_agc_low_pct_  = this->declare_parameter("raw16_agc_low_pct", 1.0);
   raw16_agc_high_pct_ = this->declare_parameter("raw16_agc_high_pct", 1.0);
@@ -195,6 +221,12 @@ void BosonCamera::agc(
 
     *max_temp = max_val / 100. - 273.15;
     *min_temp = min_val / 100. - 273.15;
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      max_val = (max_temp_limit_ + 273.15) * 100;
+      min_val = (min_temp_limit_ + 273.15) * 100;
+    }
 
     // Scale using SIMD-optimized convertTo
     double scale = 255.0 / (max_val - min_val);
@@ -471,7 +503,7 @@ void BosonCamera::captureAndPublish()
 
       // put temperature info
       thermal8_temp_ = thermal8_heatmap_.clone();
-      std::stringstream max_temp_ss, min_temp_ss;
+      std::stringstream max_temp_ss, min_temp_ss, ptr_temp_ss;
       max_temp_ss << std::fixed << std::setprecision(2) << max_temp;
       min_temp_ss << std::fixed << std::setprecision(2) << min_temp;
 
@@ -481,7 +513,20 @@ void BosonCamera::captureAndPublish()
                   cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0,0,0), 1);
       cv::putText(thermal8_temp_, disp_min_temp, cv::Point(15,30),
                   cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0,0,0), 1);
-      // 8bit image
+      // pointer temperature
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        temp_ptr_ = cv::Point(point_x_, point_y_);
+        ptr_temp_ = thermal16_linear_.at<uint16_t>(point_x_, point_y_) / 100.0 - 273.15;
+      }
+      ptr_temp_ss << std::fixed << std::setprecision(2) << ptr_temp_;
+      std::string disp_ptr_temp = "Ptr: " + ptr_temp_ss.str() + " deg";
+      cv::putText(thermal8_temp_, disp_ptr_temp, cv::Point(15, 45),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 0), 1);
+      cv::circle(thermal8_temp_, temp_ptr_, 3, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
+      cv::circle(thermal8_temp_, temp_ptr_, 2, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
+
+      // 24bit image
       cv_img.image = thermal8_temp_;
       cv_img.encoding = "bgr8";
       image_pub_temp_.publish(cv_img.toImageMsg());
