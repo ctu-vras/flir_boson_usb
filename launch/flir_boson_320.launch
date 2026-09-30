@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="sensor_type" default="Boson_320"/>
+  <arg name="camera_info_url" default="package://flir_boson_usb/example_calibrations/Boson320.yaml"/>
+
+  <include file="$(find-pkg-share flir_boson_usb)/launch/flir_boson.launch.py">
+    <arg name="sensor_type" value="$(var sensor_type)"/>
+    <arg name="camera_info_url" value="$(var camera_info_url)"/>
+  </include>
+</launch>
