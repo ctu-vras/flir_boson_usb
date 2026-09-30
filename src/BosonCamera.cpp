@@ -104,6 +104,10 @@ void BosonCamera::init()
       this, "image_temp", rclcpp::SensorDataQoS().get_rmw_qos_profile());
   }
 
+  max_temp_pub_ = this->create_publisher<sensor_msgs::msg::Temperature>("max_temp", 1);
+  min_temp_pub_ = this->create_publisher<sensor_msgs::msg::Temperature>("min_temp", 1);
+  ptr_temp_pub_ = this->create_publisher<sensor_msgs::msg::Temperature>("ptr_temp", 1);
+
   if (video_mode_str_ == "RAW16") video_mode_ = RAW16;
   else if (video_mode_str_ == "YUV") video_mode_ = YUV;
   else {
@@ -525,6 +529,17 @@ void BosonCamera::captureAndPublish()
                   cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 0), 1);
       cv::circle(thermal8_temp_, temp_ptr_, 3, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
       cv::circle(thermal8_temp_, temp_ptr_, 2, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
+
+      max_temp_msg_.header = header;
+      min_temp_msg_.header = header;
+      ptr_temp_msg_.header = header;
+      max_temp_msg_.temperature = max_temp;
+      min_temp_msg_.temperature = min_temp;
+      ptr_temp_msg_.temperature = ptr_temp_;
+
+      max_temp_pub_->publish(max_temp_msg_);
+      min_temp_pub_->publish(min_temp_msg_);
+      ptr_temp_pub_->publish(ptr_temp_msg_);
 
       // 24bit image
       cv_img.image = thermal8_temp_;
