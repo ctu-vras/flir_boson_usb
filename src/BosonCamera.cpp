@@ -69,12 +69,17 @@ void BosonCamera::init()
   // Set explicit Best-Effort / SensorData QoS for 60Hz camera streams
   image_pub_ = image_transport::create_camera_publisher(
     this, "image_raw", rclcpp::SensorDataQoS().get_rmw_qos_profile());
+  image_pub_8_ = image_transport::create_publisher(
+    this, "image8", rclcpp::SensorDataQoS().get_rmw_qos_profile());
+  if (publish_color_) {
+    image_pub_color_ = image_transport::create_publisher(
+      this, "image_heatmap", rclcpp::SensorDataQoS().get_rmw_qos_profile());
+  }
 
-  if (video_mode_str_ == "RAW16") video_mode_ = RAW16_PURE;
-  else if (video_mode_str_ == "RAW16_AGC") video_mode_ = RAW16_AGC;
+  if (video_mode_str_ == "RAW16") video_mode_ = RAW16;
   else if (video_mode_str_ == "YUV") video_mode_ = YUV;
   else {
-    RCLCPP_ERROR(this->get_logger(), "Invalid video_mode. Use YUV, RAW16, or RAW16_AGC.");
+    RCLCPP_ERROR(this->get_logger(), "Invalid video_mode. Use YUV or RAW16.");
     rclcpp::shutdown();
     return;
   }
@@ -111,24 +116,19 @@ void BosonCamera::init()
     }
   }
 
-  if (publish_color_ && isRaw16()) {
-    RCLCPP_WARN(this->get_logger(), 
-        "publish_color is only supported in YUV mode and will be ignored.");
-  }
-
-  if (video_mode_ != RAW16_AGC && (raw16_agc_low_pct_ != 1.0 || raw16_agc_high_pct_ != 1.0)) {
+  if (video_mode_ != RAW16 && (raw16_agc_low_pct_ != 1.0 || raw16_agc_high_pct_ != 1.0)) {
     RCLCPP_WARN(this->get_logger(),
         "AGC clip percentages (raw16_agc_low_pct / raw16_agc_high_pct) are only "
-        "supported in RAW16_AGC mode and will be ignored.");
+        "supported in RAW16 mode and will be ignored.");
   }
   
   if (zoom_enable_ && sensor_type_ == Boson640) {
     RCLCPP_WARN(this->get_logger(), "zoom_enable is only for Boson320.");
   }
 
-  if (zoom_enable_ && sensor_type_ == Boson320 && video_mode_ != RAW16_AGC) {
+  if (zoom_enable_ && sensor_type_ == Boson320 && video_mode_ != RAW16) {
     RCLCPP_WARN(this->get_logger(),
-      "zoom_enable is only honored in RAW16_AGC mode (got %s). Image will be published at native sensor resolution.",
+      "zoom_enable is only honored in RAW16 mode (got %s). Image will be published at native sensor resolution.",
       video_mode_str_.c_str());
   }
 
@@ -148,9 +148,11 @@ BosonCamera::~BosonCamera()
   closeCamera();
 }
 
-void BosonCamera::agc(const cv::Mat& input_16, cv::Mat& output_8, double clip_low_pct, double clip_high_pct)
+void BosonCamera::agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct)
 {
     CV_Assert(input_16.type() == CV_16UC1);
+
+    output_16 = input_16.clone();
 
     int histSize = 65536;
     float range[] = { 0, 65536 };
@@ -213,12 +215,12 @@ bool BosonCamera::openCamera()
   int requested_width = (sensor_type_ == Boson640) ? 640 : 320;
   int requested_height = (sensor_type_ == Boson640) ? 512 : 256;
 
-  if (zoom_enable_ && sensor_type_ == Boson320 && video_mode_ == RAW16_AGC) {
+  if (zoom_enable_ && sensor_type_ == Boson320 && video_mode_ == RAW16) {
     thermal16_linear_zoom_ = Mat(512, 640, CV_8UC1);
   }
 
   // 2. Set format parameters
-  if (isRaw16()) {
+  if (video_mode_ == RAW16) {
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_Y16;
   } else {
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_YVU420;
@@ -259,7 +261,7 @@ bool BosonCamera::openCamera()
   }
 
   // 6. Check that the driver accepted a format we actually know how to unpack
-  if (isRaw16() && format.fmt.pix.pixelformat != V4L2_PIX_FMT_Y16) {
+  if (video_mode_ == RAW16 && format.fmt.pix.pixelformat != V4L2_PIX_FMT_Y16) {
     RCLCPP_ERROR(this->get_logger(), "Driver did not negotiate Y16 in RAW16 mode.");
     return false;
   }
@@ -327,6 +329,7 @@ bool BosonCamera::openCamera()
 
   // Pre-allocate output Mats to expected_height_
   thermal16_linear_ = cv::Mat(expected_height_, width_, CV_8UC1);
+  thermal8_linear_ = cv::Mat(expected_height_, width_, CV_16UC1);
   if (video_mode_ == YUV && publish_color_) {
     thermal_rgb_ = cv::Mat(height_, width_, CV_8UC3);
   }
@@ -385,14 +388,10 @@ void BosonCamera::captureAndPublish()
   cv_img.header = header;
 
   // ---------- Phase A: copy data out of the V4L2 buffer ----------
-  if (video_mode_ == RAW16_PURE) {
-    cv::Mat thermal16(height_, width_, CV_16UC1, current_buffer, bytesperline_);
-    cv_img.image = thermal16(cv::Rect(0, 0, width_, expected_height_)).clone();
-  }
-  else if (video_mode_ == RAW16_AGC) {
+  if (video_mode_ == RAW16) {
     cv::Mat thermal16(height_, width_, CV_16UC1, current_buffer, bytesperline_);
     cv::Mat thermal16_cropped = thermal16(cv::Rect(0, 0, width_, expected_height_));
-    agc(thermal16_cropped, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_);
+    agc(thermal16_cropped, thermal8_linear_, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_);
   }
   else { // YUV
     cv::Mat thermal_luma(height_ + height_ / 2, width_, CV_8UC1, current_buffer);
@@ -410,17 +409,14 @@ void BosonCamera::captureAndPublish()
   }
 
   // ---------- Phase C: set encodings, zoom, publish ----------
-  if (video_mode_ == RAW16_PURE) {
-    cv_img.encoding = "mono16";
-  }
-  else if (video_mode_ == RAW16_AGC) {
+  if (video_mode_ == RAW16) {
     if (zoom_enable_ && sensor_type_ == Boson320) {
       cv::resize(thermal16_linear_, thermal16_linear_zoom_, cv::Size(640, 512));
       cv_img.image = thermal16_linear_zoom_;
     } else {
       cv_img.image = thermal16_linear_;
     }
-    cv_img.encoding = "mono8";
+    cv_img.encoding = "mono16";
   }
   else { // YUV
     if (publish_color_) {
@@ -446,6 +442,26 @@ void BosonCamera::captureAndPublish()
 
   ci->header = header;
   image_pub_.publish(*cv_img.toImageMsg(), *ci);
+
+  if (video_mode_ == RAW16) {
+    // 8bit image
+    if (zoom_enable_ && sensor_type_ == Boson320) {
+      cv::resize(thermal8_linear_, thermal8_linear_zoom_, cv::Size(640, 512));
+      cv_img.image = thermal8_linear_zoom_;
+    } else {
+      cv_img.image = thermal8_linear_;
+    }
+    cv_img.encoding = "mono8";
+    image_pub_8_.publish(cv_img.toImageMsg());
+
+    if (publish_color_) {
+      cv::applyColorMap(cv_img.image, thermal8_color_, cv::COLORMAP_JET);
+      // 8bit heatmap image
+      cv_img.image = thermal8_color_;
+      cv_img.encoding = "bgr8";
+      image_pub_color_.publish(cv_img.toImageMsg());
+    }
+  }
 }
 
 }  // namespace flir_boson_usb

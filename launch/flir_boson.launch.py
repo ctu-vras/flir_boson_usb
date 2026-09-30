@@ -47,7 +47,6 @@ def generate_launch_description():
         'video_mode', default_value='YUV',
         description='YUV: hardware-AGC mono8/bgr8 from camera DSP (low CPU). '
                     'RAW16: raw 16-bit thermal counts, published as mono16. '
-                    'RAW16_AGC: host-side percentile AGC, published as mono8.'
     )
     zoom_enable_arg = DeclareLaunchArgument(
         'zoom_enable', default_value='False',
@@ -56,17 +55,17 @@ def generate_launch_description():
     )
     publish_color_arg = DeclareLaunchArgument(
         'publish_color', default_value='False',
-        description='Publish 3-channel BGR colorized output instead of mono8 '
-                    '(YUV mode only)'
+        description='Publish 3-channel BGR colorized output (instead of mono8 '
+                    'in YUV mode; in addition to mono16 in RAW16 mode).'
     )
     raw16_agc_low_pct_arg = DeclareLaunchArgument(
         'raw16_agc_low_pct', default_value='1.0',
-        description='Bottom-tail clip percentage for RAW16_AGC (e.g. 1.0 '
+        description='Bottom-tail clip percentage for AGC (e.g. 1.0 '
                     'discards the darkest 1% of pixels). Valid range: [0, 50).'
     )
     raw16_agc_high_pct_arg = DeclareLaunchArgument(
         'raw16_agc_high_pct', default_value='1.0',
-        description='Top-tail clip percentage for RAW16_AGC (e.g. 1.0 '
+        description='Top-tail clip percentage for AGC (e.g. 1.0 '
                     'discards the brightest 1% of pixels). Valid range: [0, 50).'
     )
     sensor_type_arg = DeclareLaunchArgument(

@@ -41,10 +41,9 @@
 namespace flir_boson_usb
 {
 
-enum Encoding { 
-  YUV = 0, 
-  RAW16_AGC = 1, 
-  RAW16_PURE = 2 
+enum Encoding {
+  YUV = 0,
+  RAW16 = 1,
 };
 
 enum SensorTypes { Boson320, Boson640 };
@@ -61,23 +60,20 @@ private:
   bool closeCamera();
   void captureAndPublish();
 
-  bool isRaw16() const {
-  return video_mode_ == RAW16_PURE || video_mode_ == RAW16_AGC;
-  }
-  
   // Custom processing utilities
-  void agc(const cv::Mat& input_16, cv::Mat& output_8, double clip_low_pct, double clip_high_pct);
+  void agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct);
 
   // ROS Node variables
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_;
   image_transport::CameraPublisher image_pub_;
+  image_transport::Publisher image_pub_8_, image_pub_color_;
   rclcpp::TimerBase::SharedPtr init_timer_;
   rclcpp::TimerBase::SharedPtr capture_timer_;
 
   // Hardware V4L2 variables
   int32_t width_, height_, fd_;
   struct v4l2_capability cap_;
-  
+
   struct V4L2Buffer {
       void* start;
       size_t length;
@@ -85,9 +81,9 @@ private:
   std::vector<V4L2Buffer> buffers_; // 4-buffer Ring Queue
   int expected_height_;
   size_t bytesperline_;
-  
+
   // OpenCV Mats (Pre-allocated to prevent memory churn)
-  cv::Mat thermal16_linear_, thermal16_linear_zoom_, thermal_rgb_, hist_;
+  cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_, thermal8_color_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
 
   // Parameters
   std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
