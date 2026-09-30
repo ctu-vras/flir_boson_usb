@@ -517,7 +517,7 @@ void BosonCamera::captureAndPublish()
       {
         std::lock_guard<std::mutex> lock(mutex_);
         temp_ptr_ = cv::Point(point_x_, point_y_);
-        ptr_temp_ = thermal16_linear_.at<uint16_t>(point_x_, point_y_) / 100.0 - 273.15;
+        ptr_temp_ = thermal16_linear_.at<uint16_t>(point_y_, point_x_) / 100.0 - 273.15;
       }
       ptr_temp_ss << std::fixed << std::setprecision(2) << ptr_temp_;
       std::string disp_ptr_temp = "Ptr: " + ptr_temp_ss.str() + " deg";
