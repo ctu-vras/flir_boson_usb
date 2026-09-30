@@ -51,24 +51,24 @@
     <group if="$(var rectify)">
       <load_composable_node target="$(var namespace)/$(var component_container)">
         <composable_node name="rectify_raw" pkg="image_proc" plugin="image_proc::RectifyNode">
-          <remap from="image_mono" to="image_raw"/>
+          <remap from="image" to="image_raw"/>
         </composable_node>
       </load_composable_node>
 
       <group if="$(var publish_color)">
         <load_composable_node target="$(var namespace)/$(var component_container)">
           <composable_node name="rectify_8" pkg="image_proc" plugin="image_proc::RectifyNode">
-            <remap from="image_mono" to="image8"/>
+            <remap from="image" to="image8"/>
             <remap from="image_rect" to="image8_rect"/>
           </composable_node>
 
           <composable_node name="rectify_8_norm" pkg="image_proc" plugin="image_proc::RectifyNode">
-            <remap from="image_mono" to="image8_norm"/>
+            <remap from="image" to="image8_norm"/>
             <remap from="image_rect" to="image8_norm_rect"/>
           </composable_node>
 
           <composable_node name="rectify_heatmap" pkg="image_proc" plugin="image_proc::RectifyNode">
-            <remap from="image_mono" to="image_heatmap"/>
+            <remap from="image" to="image_heatmap"/>
             <remap from="image_rect" to="image_heatmap_rect"/>
           </composable_node>
         </load_composable_node>
