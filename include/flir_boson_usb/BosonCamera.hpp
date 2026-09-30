@@ -61,12 +61,13 @@ private:
   void captureAndPublish();
 
   // Custom processing utilities
-  void agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct);
+  void agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
+    double* max_temp, double* min_temp);
 
   // ROS Node variables
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_;
   image_transport::CameraPublisher image_pub_;
-  image_transport::Publisher image_pub_8_, image_pub_color_;
+  image_transport::Publisher image_pub_8_, image_pub_heatmap_, image_pub_temp_;
   rclcpp::TimerBase::SharedPtr init_timer_;
   rclcpp::TimerBase::SharedPtr capture_timer_;
 
@@ -81,9 +82,11 @@ private:
   std::vector<V4L2Buffer> buffers_; // 4-buffer Ring Queue
   int expected_height_;
   size_t bytesperline_;
+  double max_temp, min_temp;
 
   // OpenCV Mats (Pre-allocated to prevent memory churn)
-  cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_, thermal8_color_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
+  cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_,
+    thermal8_heatmap_, thermal8_temp_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
 
   // Parameters
   std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;

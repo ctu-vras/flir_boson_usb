@@ -72,8 +72,10 @@ void BosonCamera::init()
   image_pub_8_ = image_transport::create_publisher(
     this, "image8", rclcpp::SensorDataQoS().get_rmw_qos_profile());
   if (publish_color_) {
-    image_pub_color_ = image_transport::create_publisher(
+    image_pub_heatmap_ = image_transport::create_publisher(
       this, "image_heatmap", rclcpp::SensorDataQoS().get_rmw_qos_profile());
+    image_pub_temp_ = image_transport::create_publisher(
+      this, "image_temp", rclcpp::SensorDataQoS().get_rmw_qos_profile());
   }
 
   if (video_mode_str_ == "RAW16") video_mode_ = RAW16;
@@ -148,7 +150,9 @@ BosonCamera::~BosonCamera()
   closeCamera();
 }
 
-void BosonCamera::agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct)
+void BosonCamera::agc(
+  const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
+  double* max_temp, double* min_temp)
 {
     CV_Assert(input_16.type() == CV_16UC1);
 
@@ -188,6 +192,9 @@ void BosonCamera::agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& outpu
     }
 
     if (max_val <= min_val) max_val = min_val + 1; // Prevent division by zero
+
+    *max_temp = max_val / 100. - 273.15;
+    *min_temp = min_val / 100. - 273.15;
 
     // Scale using SIMD-optimized convertTo
     double scale = 255.0 / (max_val - min_val);
@@ -387,11 +394,12 @@ void BosonCamera::captureAndPublish()
   cv_bridge::CvImage cv_img;
   cv_img.header = header;
 
+  double max_temp, min_temp;
   // ---------- Phase A: copy data out of the V4L2 buffer ----------
   if (video_mode_ == RAW16) {
     cv::Mat thermal16(height_, width_, CV_16UC1, current_buffer, bytesperline_);
     cv::Mat thermal16_cropped = thermal16(cv::Rect(0, 0, width_, expected_height_));
-    agc(thermal16_cropped, thermal8_linear_, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_);
+    agc(thermal16_cropped, thermal8_linear_, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_, &max_temp, &min_temp);
   }
   else { // YUV
     cv::Mat thermal_luma(height_ + height_ / 2, width_, CV_8UC1, current_buffer);
@@ -455,11 +463,28 @@ void BosonCamera::captureAndPublish()
     image_pub_8_.publish(cv_img.toImageMsg());
 
     if (publish_color_) {
-      cv::applyColorMap(cv_img.image, thermal8_color_, cv::COLORMAP_JET);
+      cv::applyColorMap(cv_img.image, thermal8_heatmap_, cv::COLORMAP_JET);
       // 8bit heatmap image
-      cv_img.image = thermal8_color_;
+      cv_img.image = thermal8_heatmap_;
       cv_img.encoding = "bgr8";
-      image_pub_color_.publish(cv_img.toImageMsg());
+      image_pub_heatmap_.publish(cv_img.toImageMsg());
+
+      // put temperature info
+      thermal8_temp_ = thermal8_heatmap_.clone();
+      std::stringstream max_temp_ss, min_temp_ss;
+      max_temp_ss << std::fixed << std::setprecision(2) << max_temp;
+      min_temp_ss << std::fixed << std::setprecision(2) << min_temp;
+
+      std::string disp_max_temp = "Max: " + max_temp_ss.str() + " deg";
+      std::string disp_min_temp = "Min: " + min_temp_ss.str() + " deg";
+      cv::putText(thermal8_temp_, disp_max_temp, cv::Point(15,15),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0,0,0), 1);
+      cv::putText(thermal8_temp_, disp_min_temp, cv::Point(15,30),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0,0,0), 1);
+      // 8bit image
+      cv_img.image = thermal8_temp_;
+      cv_img.encoding = "bgr8";
+      image_pub_temp_.publish(cv_img.toImageMsg());
     }
   }
 }
