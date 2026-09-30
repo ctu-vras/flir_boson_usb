@@ -114,7 +114,7 @@ elseif(ament_cmake_FOUND)
 
   install(DIRECTORY launch
     DESTINATION share/${PROJECT_NAME}
-    FILES_MATCHING PATTERN *.launch.xml
+    PATTERN *.launch EXCLUDE
   )
 
   install(DIRECTORY example_calibrations
