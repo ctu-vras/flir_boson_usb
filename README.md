@@ -55,7 +55,7 @@ Use the provided launch file. Arguments can be overridden per-camera:
 
 ```bash
 # ROS 2
-ros2 launch flir_boson_usb flir_boson.launch.py dev:=/dev/video4 video_mode:=YUV frame_rate:=30.0
+ros2 launch flir_boson_usb flir_boson.launch.xml dev:=/dev/video4 video_mode:=YUV frame_rate:=30.0
 
 # ROS 1
 roslaunch flir_boson_usb flir_boson.launch dev:=/dev/video4 video_mode:=YUV frame_rate:=30.0
@@ -75,21 +75,28 @@ The driver supports two `video_mode` values, each producing a different output s
 
 - **Automatic telemetry handling.** If binary telemetry metadata rows are active via the FLIR GUI, the driver reads the full buffer, handles telemetry isolation, and automatically crops the published image back to nominal array sizes (640×512 or 320×256) so standard `CameraInfo` calibrations continue to function perfectly.
 
-### Launch arguments
+### Launch arguments and node parameters
+
+The provided launch files expose all driver parameters as launch args. So most of these arguments also right away describe the node parameters.
 
 | Argument | Description | Default |
 | :--- | :--- | :--- |
 | `namespace` | ROS namespace for the camera node. | `flir_boson` |
-| `frame_id` | TF frame ID stamped on each `Image` header. | `boson_camera` |
-| `dev` | Linux video device path (e.g. `/dev/video4`). | `/dev/video0` |
-| `frame_rate` | V4L2 dequeue timer rate in Hz. Settles to physical limit if parameter exceeds hardware rate. Typical hardware rates are 9, 30, or 60. | `30.0` |
-| `video_mode` | `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no host processing). `RAW16_AGC`: host-side percentile AGC (`mono8`, tunable). | `YUV` |
-| `publish_color` | Publishes a `bgr8` colorized image instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. Only supported in `YUV` mode; ignored in `RAW16`/`RAW16_AGC`. | `False` |
-| `raw16_agc_low_pct` | Bottom-tail clip percentage for `RAW16` AGC (e.g. `1.0` discards the darkest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
-| `raw16_agc_high_pct` | Top-tail clip percentage for `RAW16` AGC (e.g. `1.0` discards the brightest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
-| `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only honored on `sensor_type:=Boson_320` in `RAW16_AGC` mode; ignored elsewhere. | `False` |
+| `frame_id` | Frame used in `header.frame_id`. | `boson_camera` |
+| `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` |
 | `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. | `Boson_640` |
+| `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` |
+| `video_mode` | Camera image format. `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no camera processing).| `YUV` |
+| `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only available on `Boson320` cameras. | `False` |
+| `publish_color` | In `YUV` mode, publishes a `bgr8` colorized image instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. In `RAW16` mode, this enables the heatmap image. | `False` |
+| `raw16_agc_low_pct` | Bottom-tail clip percentage for `RAW16` driver-side AGC (e.g. `1.0` discards the darkest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
+| `raw16_agc_high_pct` | Top-tail clip percentage for `RAW16` driver-side AGC (e.g. `1.0` discards the brightest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
 | `camera_info_url` | Camera calibration file URL (`file://` or `package://`). Empty publishes uncalibrated `CameraInfo`. See [Calibration](#calibration) below. | `""` |
+| `point_x` (dynamic param)| X coord of the temperature probe point. | `319` |
+| `point_y` (dynamic param) | Y coord of the temperature probe point. | `255` |
+| `max_temp_limit` (dynamic param) | Maximum temperature for constant AGC. | `50` |
+| `min_temp_limit` (dynamic param) | Minimum temperature for constant AGC. | `20` |
+| `norm_margin` (dynamic param) | Constant AGC margin (in 8-bit image units). Non-zero values means the given number of lowest and highest values will not be used in the linear stretch. | `20.0` |
 
 ### Tuning the RAW16 AGC percentiles
 
@@ -103,7 +110,7 @@ Setting both to `0.0` is equivalent to a pure min/max stretch.
 
 ### Dynamically reconfigurable parameters
 
-`point_x`, `point_y`, `max_temp_limit`, `min_temp_limit` and `norm_margin` are applied
+`point_x`, `point_y`, `max_temp_limit`, `min_temp_limit` and `norm_margin` are dynamic parameters that can be tuned
 while the node is running:
 
 ```bash
@@ -130,7 +137,7 @@ This driver publishes empty `CameraInfo` by default. To load a calibration, set 
 
 ```bash
 # ROS 2
-ros2 launch flir_boson_usb flir_boson.launch.py camera_info_url:=file:///home/user/my_boson.yaml
+ros2 launch flir_boson_usb flir_boson.launch.xml camera_info_url:=file:///home/user/my_boson.yaml
 
 # ROS 1
 roslaunch flir_boson_usb flir_boson.launch camera_info_url:=file:///home/user/my_boson.yaml

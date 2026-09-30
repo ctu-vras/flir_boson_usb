@@ -84,30 +84,57 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
     "dev", "/dev/video0", paramDesc("the linux file descriptor location for the camera"));
-  frame_rate_ = this->declare_parameter(
-    "frame_rate", 30.0, paramDescRangeF("Frame rate of the camera", 9.0, 60.0, 3.0, "Only 9/30/60 supported."));
-  video_mode_str_ = this->declare_parameter("video_mode", "YUV", paramDesc("Camera image format.", "YUV|RAW16"));
-  zoom_enable_ = this->declare_parameter("zoom_enable", false, paramDesc("Enlarge Boson320 to the resolution of 640."));
-  publish_color_ = this->declare_parameter("publish_color", false, paramDesc("Publish color images."));
   sensor_type_str_ = this->declare_parameter(
-    "sensor_type", "Boson_640", paramDesc("Camera type", "Boson_640|Boson_320"));
+    "sensor_type", "Boson_640",
+    paramDesc(
+      "Physical sensor array size. Boson_320 or Boson_640. The driver cross-checks this against the V4L2-negotiated "
+      "width and refuses to start on a mismatch.",
+      "Boson_640|Boson_320"));
+  const auto is640 = sensor_type_str_ == "Boson_640";
+  frame_rate_ = this->declare_parameter(
+    "frame_rate", 30.0, paramDescRangeF("Frame rate of the camera", 9.0, 60.0, 3.0, "Only 9.0/30.0/60.0 supported."));
+  if (!is640) {
+    zoom_enable_ = this->declare_parameter(
+      "zoom_enable", false,
+      paramDesc("Digital 2x upscale (320x256 -> 640x512) of the published image. Only available on Boson320 cameras."));
+  }
+  video_mode_str_ = this->declare_parameter(
+    "video_mode", "YUV",
+    paramDesc(
+      "Camera image format. "
+      "YUV: camera-side AGC (mono8/bgr8, low CPU). "
+      "RAW16: raw 16-bit thermal counts (mono16, no camera processing).",
+      "YUV|RAW16"));
+  publish_color_ = this->declare_parameter("publish_color", false, paramDesc("Publish color images."));
+  raw16_agc_low_pct_ = this->declare_parameter(
+    "raw16_agc_low_pct", 1.0,
+    paramDescRangeF(
+      "Bottom-tail clip percentage for RAW16 driver-side AGC (e.g. 1.0 discards the darkest 1% of pixels before "
+      "linear stretch). Valid range [0, 50); invalid values revert to 1.0.",
+      0.0, 50.0));
+  raw16_agc_high_pct_ = this->declare_parameter(
+    "raw16_agc_high_pct", 1.0,
+    paramDescRangeF(
+      "Top-tail clip percentage for RAW16 driver-side AGC (e.g. 1.0 discards the brightest 1% of pixels before "
+      "linear stretch). Valid range [0, 50); invalid values revert to 1.0.",
+      0.0, 50.0));
   camera_info_url_ = this->declare_parameter(
     "camera_info_url", "",
-    paramDesc("location of the camera calibration file, empty publishes uncalibrated CameraInfo"));
-  const auto is640 = sensor_type_str_ == "Boson_640";
+    paramDesc("Camera calibration file URL (file:// or package://). Empty publishes uncalibrated CameraInfo."));
   point_x_ = this->declare_parameter(
     "point_x", is640 ? 319 : 159, paramDescRangeI("X coord of the temperature probe point", 0, is640 ? 639 : 319));
   point_y_ = this->declare_parameter(
     "point_y", is640 ? 255 : 127, paramDescRangeI("Y coord of the temperature probe point", 0, is640 ? 511 : 255));
   max_temp_limit_ = this->declare_parameter(
-    "max_temp_limit", 50, paramDescRangeI("Maximum temperature used for image8 normalization.", -273, 655 - 273 - 1));
+    "max_temp_limit", 50, paramDescRangeI("Maximum temperature for constant AGC.", -273, 655 - 273 - 1));
   min_temp_limit_ = this->declare_parameter(
-    "min_temp_limit", 20, paramDescRangeI("Minimum temperature used for image8 normalization.", -273, max_temp_limit_));
-  norm_margin_ = this->declare_parameter("norm_margin", 20.0, paramDescRangeF("Normalization margin", 0.0, 120.0));
-  raw16_agc_low_pct_ = this->declare_parameter(
-    "raw16_agc_low_pct", 1.0, paramDescRangeF("Low AGC percentile", 0.0, 50.0));
-  raw16_agc_high_pct_ = this->declare_parameter(
-    "raw16_agc_high_pct", 1.0, paramDescRangeF("High AGC percentile", 0.0, 50.0));
+    "min_temp_limit", 20, paramDescRangeI("Minimum temperature for constant AGC.", -273, max_temp_limit_));
+  norm_margin_ = this->declare_parameter(
+    "norm_margin", 20.0,
+    paramDescRangeF(
+      "Constant AGC margin (in 8-bit image units). Non-zero values means the given number of lowest and highest "
+      "values will not be used in the linear stretch.",
+      0.0, 120.0));
 
   this->validateParams();
 
