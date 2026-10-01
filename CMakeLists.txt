@@ -1,59 +1,123 @@
-cmake_minimum_required(VERSION 3.8)
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+# SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+# SPDX-FileCopyrightText: Czech Technical University in Prague
+
+cmake_minimum_required(VERSION 3.10.2)
 project(flir_boson_usb)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -std=c++17)
+find_package(ament_cmake QUIET)
+find_package(catkin QUIET)
+
+if(catkin_FOUND)
+  # ROS 1
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+
+  find_package(catkin REQUIRED COMPONENTS
+    camera_info_manager
+    cras_cpp_common
+    cv_bridge
+    dynamic_reconfigure
+    image_transport
+    nodelet
+    pluginlib
+    roscpp
+    sensor_msgs
+  )
+
+  generate_dynamic_reconfigure_options(
+    cfg/BosonCamera.cfg
+  )
+
+  catkin_package(
+    CATKIN_DEPENDS
+      camera_info_manager
+      cras_cpp_common
+      cv_bridge
+      dynamic_reconfigure
+      image_transport
+      nodelet
+      pluginlib
+      roscpp
+      sensor_msgs
+  )
+
+  include_directories(
+    include
+    ${catkin_INCLUDE_DIRS}
+  )
+
+  add_library(BosonCamera src/BosonCamera.cpp)
+  add_dependencies(BosonCamera ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+  target_link_libraries(BosonCamera ${catkin_LIBRARIES})
+  cras_node_from_nodelet(BosonCamera flir_boson_usb::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
+
+  install(TARGETS BosonCamera
+    ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+    LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  )
+
+  install(DIRECTORY launch
+    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+    FILES_MATCHING PATTERN *.launch
+  )
+
+  install(DIRECTORY example_calibrations
+    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+  )
+
+  install(FILES nodelet_plugins.xml
+    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+  )
+
+elseif(ament_cmake_FOUND)
+  # ROS 2
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+
+  find_package(camera_info_manager REQUIRED)
+  find_package(cras_cpp_common REQUIRED)
+  find_package(cv_bridge REQUIRED)
+  find_package(image_transport REQUIRED)
+  find_package(rclcpp REQUIRED)
+  find_package(rclcpp_components REQUIRED)
+  find_package(sensor_msgs REQUIRED)
+
+  include_directories(include)
+
+  add_library(boson_camera_component SHARED src/BosonCamera.cpp)
+  target_compile_definitions(boson_camera_component PRIVATE "ROS2")
+  target_link_libraries(boson_camera_component PUBLIC
+    camera_info_manager::camera_info_manager
+    cras_cpp_common::cras_image_transport
+    cv_bridge::cv_bridge
+    image_transport::image_transport
+    rclcpp::rclcpp
+    rclcpp_components::component
+    ${sensor_msgs_TARGETS}
+  )
+  rclcpp_components_register_node(
+    boson_camera_component PLUGIN "flir_boson_usb::BosonCamera" EXECUTABLE boson_camera_node)
+
+  install(TARGETS boson_camera_component
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+  )
+
+  install(DIRECTORY launch
+    DESTINATION share/${PROJECT_NAME}
+    PATTERN *.launch EXCLUDE
+  )
+
+  install(DIRECTORY example_calibrations
+    DESTINATION share/${PROJECT_NAME}
+  )
+
+  ament_package()
+
+else()
+  message(FATAL_ERROR "Build failed because neither catkin nor ament found.")
 endif()
-
-# Find dependencies
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(rclcpp_components REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(image_transport REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(camera_info_manager REQUIRED)
-find_package(OpenCV REQUIRED)
-
-# Include directories
-include_directories(
-  include
-  ${OpenCV_INCLUDE_DIRS}
-)
-
-# Create the Component Library
-add_library(boson_camera_component SHARED src/BosonCamera.cpp)
-target_compile_definitions(boson_camera_component PRIVATE "BOSON_CAMERA_BUILDING_DLL")
-
-ament_target_dependencies(boson_camera_component
-  rclcpp
-  rclcpp_components
-  cv_bridge
-  image_transport
-  sensor_msgs
-  camera_info_manager
-)
-
-target_link_libraries(boson_camera_component ${OpenCV_LIBRARIES})
-
-# Register the Component and create the executable
-rclcpp_components_register_node(boson_camera_component
-  PLUGIN "flir_boson_usb::BosonCamera"
-  EXECUTABLE boson_camera_node
-)
-
-# Install rules
-install(TARGETS boson_camera_component boson_camera_node
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
-)
-
-install(DIRECTORY launch example_calibrations
-  DESTINATION share/${PROJECT_NAME}
-)
-
-ament_export_dependencies(
-  rclcpp rclcpp_components cv_bridge image_transport sensor_msgs camera_info_manager
-)
-ament_package()

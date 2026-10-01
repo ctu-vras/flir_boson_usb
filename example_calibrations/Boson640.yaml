@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+# SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+# SPDX-FileCopyrightText: Czech Technical University in Prague
+
 image_width: 640
 image_height: 512
 camera_name: Boson640

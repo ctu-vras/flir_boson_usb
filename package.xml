@@ -1,26 +1,62 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
 <package format="3">
   <name>flir_boson_usb</name>
   <version>2.0.0</version>
-  <description>ROS 2 USB camera driver for the FLIR BOSON using OpenCV and V4L2</description>
+  <description>USB camera driver for the FLIR BOSON using OpenCV and V4L2</description>
   <maintainer email="akhilmjohn@gmail.com">Akhil John</maintainer>
   <author>Joe Driscoll</author>
   <author>Joshua Whitley</author>
   <license>MIT</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend condition="$ROS_VERSION == 1">catkin</buildtool_depend>
+  <buildtool_depend condition="$ROS_VERSION == 2">ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclcpp_components</depend>
-  <depend>cv_bridge</depend>
-  <depend>camera_info_manager</depend>
-  <depend>image_transport</depend>
-  <depend>sensor_msgs</depend>
+  <!-- ROS 1 -->
+
+  <build_depend condition="$ROS_VERSION == 1">dynamic_reconfigure</build_depend>
+  <build_depend condition="$ROS_VERSION == 1">nodelet</build_depend>
+  <build_depend condition="$ROS_VERSION == 1">pluginlib</build_depend>
+  <build_depend condition="$ROS_VERSION == 1">roscpp</build_depend>
+
+  <exec_depend condition="$ROS_VERSION == 1">dynamic_reconfigure</exec_depend>
+  <exec_depend condition="$ROS_VERSION == 1">nodelet</exec_depend>
+  <exec_depend condition="$ROS_VERSION == 1">pluginlib</exec_depend>
+  <exec_depend condition="$ROS_VERSION == 1">roscpp</exec_depend>
+
+  <!-- ROS 2 -->
+
+  <build_depend condition="$ROS_VERSION == 2">rclcpp</build_depend>
+  <build_depend condition="$ROS_VERSION == 2">rclcpp_components</build_depend>
+
+  <exec_depend condition="$ROS_VERSION == 2">rclcpp</exec_depend>
+  <exec_depend condition="$ROS_VERSION == 2">rclcpp_components</exec_depend>
+
+  <!-- common -->
+
+  <build_depend>camera_info_manager</build_depend>
+  <build_depend>cras_cpp_common</build_depend>
+  <build_depend>cv_bridge</build_depend>
+  <build_depend>image_transport</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+
+  <exec_depend>camera_info_manager</exec_depend>
+  <exec_depend>cras_cpp_common</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
 
   <exec_depend>v4l-utils</exec_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <nodelet plugin="${prefix}/nodelet_plugins.xml" condition="$ROS_VERSION == 1"/>
+    <build_type condition="$ROS_VERSION == 1">catkin</build_type>
+    <build_type condition="$ROS_VERSION == 2">ament_cmake</build_type>
   </export>
 </package>

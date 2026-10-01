@@ -1,0 +1,84 @@
+<?xml version="1.0"?>
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
+<!-- ROS 2 launch file. -->
+<launch>
+  <arg name="namespace" default="flir_boson"/>
+  <arg name="component_container" default="$(var namespace)_container" />
+  <arg name="run_component_container" default="true" />
+
+  <arg name="rectify" default="false" />
+
+  <arg name="frame_id" default="boson_camera" description="Frame used in header.frame_id"/>
+  <arg name="dev" default="/dev/video0" description="the linux file descriptor location for the camera"/>
+  <arg name="sensor_type" default="Boson_640" description="Physical sensor array size. Boson_320 or Boson_640. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch."/>
+  <arg name="frame_rate" default="30.0" description="Frame rate of the camera. Only 9.0/30.0/60.0 supported."/>
+  <arg name="video_mode" default="YUV" description="Camera image format. YUV: camera-side AGC (mono8/bgr8, low CPU). RAW16: raw 16-bit thermal counts (mono16, no camera processing)."/>
+  <arg name="zoom_enable" default="false" description="Digital 2x upscale (320x256 -> 640x512) of the published image. Only available on Boson320 cameras."/>
+  <arg name="publish_color" default="false" description="In YUV mode, publishes a bgr8 colorized image instead of mono8. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. In RAW16 mode, this enables the heatmap image."/>
+  <arg name="raw16_agc_low_pct" default="1.0"
+       description="Bottom-tail clip percentage for RAW16 driver-side AGC (e.g. 1.0 discards the darkest 1% of pixels before linear stretch). Valid range [0, 50); invalid values revert to 1.0."/>
+  <arg name="raw16_agc_high_pct" default="1.0"
+       description="Top-tail clip percentage for RAW16 driver-side AGC (e.g. 1.0 discards the brightest 1% of pixels before linear stretch). Valid range [0, 50); invalid values revert to 1.0."/>
+  <arg name="camera_info_url" default=""
+       description="Camera calibration file URL (file:// or package://). Empty publishes uncalibrated CameraInfo."/>
+  <arg name="point_x" default="319" description="X coord of the temperature probe point."/>
+  <arg name="point_y" default="255" description="Y coord of the temperature probe point."/>
+  <arg name="min_temp" default="20" description="Minimum temperature for constant AGC."/>
+  <arg name="max_temp" default="50" description="Maximum temperature for constant AGC."/>
+
+  <group>
+    <push_ros_namespace namespace="$(var namespace)" />
+    <node pkg="rclcpp_components" exec="component_container_mt" name="$(var component_container)"
+          output="screen" respawn="true" if="$(var run_component_container)">
+    </node>
+
+    <load_composable_node target="$(var namespace)/$(var component_container)">
+      <composable_node name="flir_boson_usb_node" pkg="flir_boson_usb" plugin="flir_boson_usb::BosonCamera">
+        <param name="frame_id" type="str" value="$(var frame_id)"/>
+        <param name="dev" type="str" value="$(var dev)"/>
+        <param name="frame_rate" type="float" value="$(var frame_rate)"/>
+        <param name="video_mode" type="str" value="$(var video_mode)"/>
+        <param name="zoom_enable" type="bool" value="$(var zoom_enable)"/>
+        <param name="publish_color" type="bool" value="$(var publish_color)"/>
+        <param name="raw16_agc_low_pct" type="float" value="$(var raw16_agc_low_pct)"/>
+        <param name="raw16_agc_high_pct" type="float" value="$(var raw16_agc_high_pct)"/>
+        <param name="sensor_type" type="str" value="$(var sensor_type)"/>
+        <param name="camera_info_url" type="str" value="$(var camera_info_url)"/>
+        <param name="min_temp_limit" type="int" value="$(var min_temp)"/>
+        <param name="max_temp_limit" type="int" value="$(var max_temp)"/>
+      </composable_node>
+    </load_composable_node>
+
+    <group if="$(var rectify)">
+      <load_composable_node target="$(var namespace)/$(var component_container)">
+        <composable_node name="rectify_raw" pkg="image_proc" plugin="image_proc::RectifyNode">
+          <remap from="image" to="image_raw"/>
+        </composable_node>
+      </load_composable_node>
+
+      <group if="$(var publish_color)">
+        <load_composable_node target="$(var namespace)/$(var component_container)">
+          <composable_node name="rectify_8" pkg="image_proc" plugin="image_proc::RectifyNode">
+            <remap from="image" to="image8"/>
+            <remap from="image_rect" to="image8_rect"/>
+          </composable_node>
+
+          <composable_node name="rectify_8_norm" pkg="image_proc" plugin="image_proc::RectifyNode">
+            <remap from="image" to="image8_norm"/>
+            <remap from="image_rect" to="image8_norm_rect"/>
+          </composable_node>
+
+          <composable_node name="rectify_heatmap" pkg="image_proc" plugin="image_proc::RectifyNode">
+            <remap from="image" to="image_heatmap"/>
+            <remap from="image_rect" to="image_heatmap_rect"/>
+          </composable_node>
+        </load_composable_node>
+      </group>
+    </group>
+  </group>
+</launch>

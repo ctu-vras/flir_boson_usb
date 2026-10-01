@@ -1,39 +1,53 @@
-# FLIR Boson USB ROS 2 Driver (`flir_boson_usb`)
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
 
-A ROS 2 (Humble) USB camera driver for the FLIR Boson thermal camera utilizing V4L2 and OpenCV.
+# FLIR Boson USB ROS Driver (`flir_boson_usb`)
 
-The node is written as an `rclcpp_components` composable node to enable Intra-Process Communication (IPC) pipelines. Topics are advertised using `rclcpp::SensorDataQoS` (best-effort, shallow depth) to optimize high-rate video delivery by dropping stale frames.
+A ROS 1 and ROS 2 USB camera driver for the FLIR Boson thermal camera utilizing V4L2 and OpenCV.
 
 ## Prerequisites
 
 Your user must belong to the `video` group to access USB video devices.
 
 ```bash
-# Navigate to your workspace root
-cd ~/ros2_ws
-
-# Install all dependencies (including v4l-utils and ROS packages)
-rosdep install --from-paths src --ignore-src -r -y
-
 # Grant your user access to USB Video devices
 sudo usermod -aG video $USER
-```
 
-> You may need to log out and log back in for the group change to take effect.
+# You may need to log out and log back in for the group change to take effect.
+```
 
 ## Building
 
+### ROS 2
+
 ```bash
-cd ~/ros2_ws
+cd ~/ws
+rosdep install --from-paths src --ignore-src -r
 colcon build --packages-select flir_boson_usb --symlink-install
 source install/setup.bash
 ```
+
+### ROS 1
+
+```bash
+cd ~/ws
+rosdep install --from-paths src --ignore-src -r
+catkin build flir_boson_usb  # or catkin_make --only-pkg-with-deps flir_boson_usb
+source devel/setup.bash
+```
+
 ## Device Verification
+
 Verify that the system detects the UVC-compliant FLIR Boson hardware:
 ```bash
 lsusb | grep FLIR
 v4l2-ctl --list-devices
 ```
+
 It should return something like the following:
 ```bash
 Boson: FLIR Video (usb-0000:00:14.0-7.3):
@@ -41,26 +55,26 @@ Boson: FLIR Video (usb-0000:00:14.0-7.3):
 	/dev/video5
 	/dev/media2
 ```
+
 ## Launching the Camera
 
-Use the provided Python launch file. Arguments can be overridden per-camera:
+Use the provided launch file. Arguments can be overridden per-camera:
 
 ```bash
-ros2 launch flir_boson_usb flir_boson.launch.py \
-    dev:=/dev/video0 \
-    video_mode:=YUV \
-    frame_rate:=30.0
+# ROS 2
+ros2 launch flir_boson_usb flir_boson.launch.xml dev:=/dev/video4 video_mode:=YUV frame_rate:=30.0
+
+# ROS 1
+roslaunch flir_boson_usb flir_boson.launch dev:=/dev/video4 video_mode:=YUV frame_rate:=30.0
 ```
 
 ### Video modes
 
-The driver supports three `video_mode` values, each producing a different output stream:
+The driver supports two `video_mode` values, each producing a different output stream:
 
 - **`YUV`** (default) — Camera-side DSP handles Automatic Gain Control (AGC) for a contrast-mapped 8-bit image (`mono8` or `bgr8` when `publish_color:=True`). Lowest CPU footprint, ideal for single-board computers or multi camera setup.
 
 - **`RAW16`** — Direct 16-bit bolometer thermal counts (`mono16`). No host processing; ideal for radiometric work or custom feature detection. Some packages might not accept `mono16` directly so be mindful of that.
-
-- **`RAW16_AGC`** —Direct 16-bit source with host-side percentile-clipping AGC mapped to `mono8`. Tunable via `raw16_agc_low_pct` / `raw16_agc_high_pct`. More robust to outlier pixels and isolated hot spots than the camera-internal AGC, at the cost of CPU time per frame.
 
 ### Notes on frame rate and performance
 
@@ -68,23 +82,30 @@ The driver supports three `video_mode` values, each producing a different output
 
 - **Automatic telemetry handling.** If binary telemetry metadata rows are active via the FLIR GUI, the driver reads the full buffer, handles telemetry isolation, and automatically crops the published image back to nominal array sizes (640×512 or 320×256) so standard `CameraInfo` calibrations continue to function perfectly.
 
-### Launch arguments
+### Launch arguments and node parameters
+
+The provided launch files expose all driver parameters as launch args. So most of these arguments also right away describe the node parameters.
 
 | Argument | Description | Default |
 | :--- | :--- | :--- |
 | `namespace` | ROS namespace for the camera node. | `flir_boson` |
-| `frame_id` | TF frame ID stamped on each `Image` header. | `boson_camera` |
-| `dev` | Linux video device path (e.g. `/dev/video4`). | `/dev/video0` |
-| `frame_rate` | V4L2 dequeue timer rate in Hz. Settles to physical limit if parameter exceeds hardware rate. Typical hardware rates are 9, 30, or 60. | `30.0` |
-| `video_mode` | `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no host processing). `RAW16_AGC`: host-side percentile AGC (`mono8`, tunable). | `YUV` |
-| `publish_color` | Publishes a `bgr8` colorized image instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. Only supported in `YUV` mode; ignored in `RAW16`/`RAW16_AGC`. | `False` |
-| `raw16_agc_low_pct` | Bottom-tail clip percentage for `RAW16_AGC` (e.g. `1.0` discards the darkest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
-| `raw16_agc_high_pct` | Top-tail clip percentage for `RAW16_AGC` (e.g. `1.0` discards the brightest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
-| `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only honored on `sensor_type:=Boson_320` in `RAW16_AGC` mode; ignored elsewhere. | `False` |
+| `frame_id` | Frame used in `header.frame_id`. | `boson_camera` |
+| `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` |
 | `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. | `Boson_640` |
+| `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` |
+| `video_mode` | Camera image format. `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no camera processing).| `YUV` |
+| `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only available on `Boson320` cameras. | `False` |
+| `publish_color` | In `YUV` mode, publishes a `bgr8` colorized image instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. In `RAW16` mode, this enables the heatmap image. | `False` |
+| `raw16_agc_low_pct` | Bottom-tail clip percentage for `RAW16` driver-side AGC (e.g. `1.0` discards the darkest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
+| `raw16_agc_high_pct` | Top-tail clip percentage for `RAW16` driver-side AGC (e.g. `1.0` discards the brightest 1% of pixels before linear stretch). Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
 | `camera_info_url` | Camera calibration file URL (`file://` or `package://`). Empty publishes uncalibrated `CameraInfo`. See [Calibration](#calibration) below. | `""` |
+| `point_x` (dynamic param)| X coord of the temperature probe point. | `319` |
+| `point_y` (dynamic param) | Y coord of the temperature probe point. | `255` |
+| `max_temp_limit` (dynamic param) | Maximum temperature for constant AGC. | `50` |
+| `min_temp_limit` (dynamic param) | Minimum temperature for constant AGC. | `20` |
+| `norm_margin` (dynamic param) | Constant AGC margin (in 8-bit image units). Non-zero values means the given number of lowest and highest values will not be used in the linear stretch. | `20.0` |
 
-### Tuning the RAW16_AGC percentiles
+### Tuning the RAW16 AGC percentiles
 
 Defaults of `1.0 / 1.0` (discard 1% from each tail) work well for most scenes. Adjust if:
 
@@ -94,12 +115,24 @@ Defaults of `1.0 / 1.0` (discard 1% from each tail) work well for most scenes. A
 
 Setting both to `0.0` is equivalent to a pure min/max stretch.
 
+### Dynamically reconfigurable parameters
+
+`point_x`, `point_y`, `max_temp_limit`, `min_temp_limit` and `norm_margin` are dynamic parameters that can be tuned
+while the node is running:
+
+```bash
+# ROS 2
+ros2 param set /flir_boson/flir_boson_usb_node point_x 320
+
+# ROS 1 (dynamic_reconfigure)
+rosrun rqt_reconfigure dynparam set /flir_boson/flir_boson_usb_node point_x 320
+```
+
 ## Published topics
 
 - **`/<namespace>/image_raw`** (`sensor_msgs/msg/Image`) — The primary video stream. Encoding depends on `video_mode`:
   - `YUV` mode: `mono8`, or `bgr8` if `publish_color:=True`
   - `RAW16` mode: `mono16` (raw 16-bit thermal counts)
-  - `RAW16_AGC` mode: `mono8`
 
 - **`/<namespace>/camera_info`** (`sensor_msgs/msg/CameraInfo`) — Calibration matrices and metadata, populated from `camera_info_url` if provided.
 
@@ -110,17 +143,20 @@ Both topics are advertised with `rclcpp::SensorDataQoS` (best-effort). `image_tr
 This driver publishes empty `CameraInfo` by default. To load a calibration, set `camera_info_url`:
 
 ```bash
-ros2 launch flir_boson_usb flir_boson.launch.py \
-    camera_info_url:=file:///home/user/my_boson.yaml
+# ROS 2
+ros2 launch flir_boson_usb flir_boson.launch.xml camera_info_url:=file:///home/user/my_boson.yaml
+
+# ROS 1
+roslaunch flir_boson_usb flir_boson.launch camera_info_url:=file:///home/user/my_boson.yaml
 ```
 
-Note: Files inside `example_calibrations/` act purely as format reference models. To create target matrices for your physical lens setup, use the ROS 2 [`camera_calibration`](https://docs.ros.org/en/jazzy/p/camera_calibration/doc/tutorial_mono.html) tools.
+Note: Files inside `example_calibrations/` act purely as format reference models. To create target matrices for your physical lens setup, use the [`camera_calibration`](https://docs.ros.org/en/jazzy/p/camera_calibration/doc/tutorial_mono.html) tools.
 
 `camera_info_url` accepts both `file://` URLs (absolute path on disk) and `package://` URLs (path relative to a ROS package share directory).
 
 ## Customizing the RAW16 pipeline
 
-To implement custom radiometric filters, lookup tables, or neural network inference arrays directly on raw thermal data, hook into the `RAW16_AGC` execution path inside `BosonCamera::captureAndPublish()` where the uncompressed raw 16-bit `cv::Mat` is passed to the `agc()` processing loop. Alternatively, capture the unprocessed `RAW16` (`mono16`) topic stream externally within an independent node.
+To implement custom radiometric filters, lookup tables, or neural network inference arrays directly on raw thermal data, process the `RAW16` (`mono16`) topic stream externally within an independent node.
 
 ## Troubleshooting
 
@@ -132,13 +168,16 @@ To implement custom radiometric filters, lookup tables, or neural network infere
 
 - **`ros2 topic echo` or `rqt_image_view` shows nothing.** Most likely a QoS mismatch: the driver publishes best-effort, but many tools default to reliable. Either tell the subscriber to use best-effort (`ros2 topic echo /flir_boson/image_raw --qos-reliability best_effort`) or run `rqt_image_view` which negotiates QoS automatically.
 
-- **`RAW16_AGC` output looks washed out or saturated.** Tune `raw16_agc_low_pct` and `raw16_agc_high_pct` — see [Tuning the RAW16_AGC percentiles](#tuning-the-raw16_agc-percentiles).
+- **`RAW16` AGC output looks washed out or saturated.** Tune `raw16_agc_low_pct` and `raw16_agc_high_pct` — see [Tuning the RAW16_AGC percentiles](#tuning-the-raw16-agc-percentiles).
 
 ## Credits & lineage
 
-This package is a ROS 2 Humble port and substantial rewrite of two earlier open-source projects. Credit to the original authors:
+This package is a substantial rewrite of two earlier open-source projects which is
+built for both ROS generations (the ROS 2 rewrite was contributed by the port
+maintainers, the ROS 1 nodelet was restored on top of it). Credit to the original authors:
 
 1. **[FLIR Systems / BosonUSB](https://github.com/FLIR/BosonUSB)** — Foundational V4L2 C++ interactions and 16-bit to 8-bit AGC conversions.
 2. **[AutonomouStuff / flir_boson_usb](https://github.com/astuff/flir_boson_usb)** — Original ROS 1 wrapper, nodelet architecture, and RAW16 image processing filters.
+2. **[GITAI / flir_boson_usb](https://github.com/GITAI/flir_boson_usb)** — Extension of the ROS 1 driver with more 8-bit outputs.
 
-Both original codebases and this ROS 2 port are released under the MIT License.
+Both the original codebases and this port are released under the MIT License.

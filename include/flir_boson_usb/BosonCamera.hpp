@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2018 FLIR Systems, INC
+// SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
+// SPDX-FileCopyrightText: Czech Technical University in Prague
+
 /*
  * Copyright (c) 2018 FLIR Systems, INC
  * Copyright (c) 2018-2019 AutonomouStuff, LLC
@@ -16,73 +21,129 @@
  * OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef FLIR_BOSON_USB_BOSONCAMERA_HPP
-#define FLIR_BOSON_USB_BOSONCAMERA_HPP
+#pragma once
 
-#include <string>
-#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
-#include <poll.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
+
 #include <linux/videodev2.h>
-#include <sys/mman.h>
-#include <opencv2/opencv.hpp>
+#include <opencv2/core/core.hpp>
 
-#include "rclcpp/rclcpp.hpp"
-#include "cv_bridge/cv_bridge.hpp"
-#include "image_transport/image_transport.hpp"
-#include "camera_info_manager/camera_info_manager.hpp"
-#include "sensor_msgs/msg/image.hpp"
-#include "sensor_msgs/msg/camera_info.hpp"
-#include "sensor_msgs/msg/temperature.hpp"
+#ifdef ROS2
 
-namespace flir_boson_usb
-{
+#include <camera_info_manager/camera_info_manager.hpp>
+#include <image_transport/image_transport.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/temperature.hpp>
+#include <std_msgs/msg/header.hpp>
 
-enum Encoding {
+#else
+
+#include <camera_info_manager/camera_info_manager.h>
+#include <cras_cpp_common/nodelet_utils.hpp>
+#include <dynamic_reconfigure/server.h>
+#include <flir_boson_usb/BosonCameraConfig.h>
+#include <image_transport/image_transport.h>
+#include <ros/ros.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <sensor_msgs/Temperature.h>
+#include <std_msgs/Header.h>
+
+#endif
+
+namespace flir_boson_usb {
+
+#ifdef ROS2
+using Header = std_msgs::msg::Header;
+using CameraInfo = sensor_msgs::msg::CameraInfo;
+using Temperature = sensor_msgs::msg::Temperature;
+#else
+using Header = std_msgs::Header;
+using CameraInfo = sensor_msgs::CameraInfo;
+using Temperature = sensor_msgs::Temperature;
+#endif
+
+enum class Encoding {
   YUV = 0,
   RAW16 = 1,
 };
 
-enum SensorTypes { Boson320, Boson640 };
+enum class SensorTypes {
+  Boson320,
+  Boson640,
+};
 
-class BosonCamera : public rclcpp::Node
+class BosonCamera :
+#ifdef ROS2
+  public rclcpp::Node
+#else
+  public cras::Nodelet
+#endif
 {
 public:
-  explicit BosonCamera(const rclcpp::NodeOptions & options);
+#ifdef ROS2
+  explicit BosonCamera(const rclcpp::NodeOptions& options);
+#else
+  BosonCamera();
+#endif
+
   ~BosonCamera() override;
 
 private:
+  void validateParams();
   void init();
   bool openCamera();
   bool closeCamera();
   void captureAndPublish();
 
-  // Custom processing utilities
-  void agc(const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
-    double* max_temp, double* min_temp);
+  // Custom processing utilitiesC
+  void agc(
+      const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
+      double* max_temp, double* min_temp);
+
+#ifdef ROS2
+  rclcpp::TimerBase::SharedPtr init_timer_;
+  rclcpp::TimerBase::SharedPtr capture_timer_;
+  PostSetParametersCallbackHandle::SharedPtr params_cb_;
+#else
+  // Nodelet entry point: reads the parameters and calls init().
+  void onInit() override;
+
+  // ROS 1 handles have to be declared before the publishers so that the
+  // publishers (and the image transport using them) are destroyed first.
+  ros::NodeHandle nh_, pnh_;
+  std::shared_ptr<image_transport::ImageTransport> it_;
+  ros::Timer capture_timer_;
+
+  // Dynamically reconfigurable parameters
+  std::shared_ptr<dynamic_reconfigure::Server<flir_boson_usb::BosonCameraConfig>> reconfigure_server_;
+  void reconfigureCallback(flir_boson_usb::BosonCameraConfig& config, uint32_t level);
+#endif
 
   // ROS Node variables
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_;
   image_transport::CameraPublisher image_pub_;
   image_transport::Publisher image_pub_8_, image_pub_heatmap_, image_pub_temp_, image_pub_8_norm_;
-  rclcpp::Publisher<sensor_msgs::msg::Temperature>::SharedPtr max_temp_pub_, min_temp_pub_, ptr_temp_pub_;
-  rclcpp::TimerBase::SharedPtr init_timer_;
-  rclcpp::TimerBase::SharedPtr capture_timer_;
+#ifndef ROS2
+  ros::Publisher max_temp_pub_, min_temp_pub_, ptr_temp_pub_;
+#else
+  rclcpp::Publisher<Temperature>::SharedPtr max_temp_pub_, min_temp_pub_, ptr_temp_pub_;
+#endif
 
   // Hardware V4L2 variables
   int32_t width_, height_, fd_;
-  struct v4l2_capability cap_;
+  v4l2_capability cap_;
 
   struct V4L2Buffer {
-      void* start;
-      size_t length;
+    void* start;
+    size_t length;
   };
-  std::vector<V4L2Buffer> buffers_; // 4-buffer Ring Queue
+  std::vector<V4L2Buffer> buffers_;  // 4-buffer Ring Queue
   int expected_height_;
   size_t bytesperline_;
   double max_temp_, min_temp_, ptr_temp_;
@@ -93,7 +154,7 @@ private:
   cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_,
     thermal8_heatmap_, thermal8_temp_, thermal8_norm_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
 
-  sensor_msgs::msg::Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
+  Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
 
   // Parameters
   std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
@@ -111,9 +172,6 @@ private:
   int max_temp_limit_, min_temp_limit_;
   double norm_margin_;
   std::mutex mutex_;
-  OnSetParametersCallbackHandle::SharedPtr params_cb_;
 };
 
 }  // namespace flir_boson_usb
-
-#endif  // FLIR_BOSON_USB_BOSONCAMERA_HPP
