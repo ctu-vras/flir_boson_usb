@@ -38,12 +38,17 @@ if(catkin_FOUND)
     ${catkin_INCLUDE_DIRS}
   )
 
+  # The image processing does not depend on ROS, so it is a separate library that can be tested
+  # without a running ROS and without a camera.
+  add_library(flir_boson_pipeline src/pipeline.cpp)
+  target_link_libraries(flir_boson_pipeline ${catkin_LIBRARIES})
+
   add_library(BosonCamera src/BosonCamera.cpp)
   add_dependencies(BosonCamera ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-  target_link_libraries(BosonCamera ${catkin_LIBRARIES})
+  target_link_libraries(BosonCamera flir_boson_pipeline ${catkin_LIBRARIES})
   cras_node_from_nodelet(BosonCamera ${PROJECT_NAME}::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
 
-  install(TARGETS BosonCamera
+  install(TARGETS BosonCamera flir_boson_pipeline
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -66,6 +71,9 @@ if(catkin_FOUND)
     find_package(roslaunch REQUIRED)
     find_package(roslint REQUIRED)
     find_package(rostest REQUIRED)
+
+    catkin_add_gtest(test_pipeline test/test_pipeline.cpp)
+    target_link_libraries(test_pipeline flir_boson_pipeline)
 
     roslint_custom(catkin_lint "-W2" .)
 
@@ -105,9 +113,15 @@ elseif(ament_cmake_FOUND)
 
   include_directories(include)
 
+  # The image processing does not depend on ROS, so it is a separate library that can be tested
+  # without a running ROS and without a camera.
+  add_library(flir_boson_pipeline SHARED src/pipeline.cpp)
+  target_link_libraries(flir_boson_pipeline PUBLIC cv_bridge::cv_bridge)
+
   add_library(boson_camera_component SHARED src/BosonCamera.cpp)
   target_compile_definitions(boson_camera_component PRIVATE "ROS2")
   target_link_libraries(boson_camera_component PUBLIC
+    flir_boson_pipeline
     camera_info_manager::camera_info_manager
     cras_cpp_common::cras_image_transport
     cras_cpp_common::cras_string_utils
@@ -120,7 +134,7 @@ elseif(ament_cmake_FOUND)
   rclcpp_components_register_node(
     boson_camera_component PLUGIN "${PROJECT_NAME}::BosonCamera" EXECUTABLE boson_camera_node)
 
-  install(TARGETS boson_camera_component
+  install(TARGETS boson_camera_component flir_boson_pipeline
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
@@ -139,6 +153,10 @@ elseif(ament_cmake_FOUND)
     find_package(cras_lint REQUIRED)
     cras_lint_common()
     cras_lint_cpp()
+
+    find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_pipeline test/test_pipeline.cpp)
+    target_link_libraries(test_pipeline flir_boson_pipeline)
   endif()
 
   ament_package()
