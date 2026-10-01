@@ -10,10 +10,13 @@ SPDX-FileCopyrightText: Czech Technical University in Prague
   <name>flir_boson_usb</name>
   <version>2.0.0</version>
   <description>USB camera driver for the FLIR BOSON using OpenCV and V4L2</description>
+
   <maintainer email="akhilmjohn@gmail.com">Akhil John</maintainer>
+
+  <license>MIT</license>
+
   <author>Joe Driscoll</author>
   <author>Joshua Whitley</author>
-  <license>MIT</license>
 
   <buildtool_depend condition="$ROS_VERSION == 1">catkin</buildtool_depend>
   <buildtool_depend condition="$ROS_VERSION == 2">ament_cmake</buildtool_depend>
@@ -53,6 +56,8 @@ SPDX-FileCopyrightText: Czech Technical University in Prague
   <exec_depend>sensor_msgs</exec_depend>
 
   <exec_depend>v4l-utils</exec_depend>
+
+  <test_depend condition="$ROS_VERSION == 2">cras_lint</test_depend>
 
   <export>
     <nodelet plugin="${prefix}/nodelet_plugins.xml" condition="$ROS_VERSION == 1"/>

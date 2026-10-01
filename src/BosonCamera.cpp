@@ -72,8 +72,6 @@
 
 namespace flir_boson_usb {
 
-using namespace cv;
-
 #ifdef ROS2
 
 inline rcl_interfaces::msg::ParameterDescriptor paramDesc(
@@ -112,7 +110,7 @@ inline rcl_interfaces::msg::ParameterDescriptor paramDescRangeF(
   return desc;
 }
 
-BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
+BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
       max_temp_(0.0), min_temp_(0.0), ptr_temp_(0.0), frame_rate_(0.0), video_mode_(Encoding::YUV), zoom_enable_(false),
       publish_color_(false), is_yv12_(false), raw16_agc_low_pct_(0.0), raw16_agc_high_pct_(0.0),
@@ -176,32 +174,32 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
   this->validateParams();
 
   params_cb_ = this->add_post_set_parameters_callback(
-    [this](const std::vector<rclcpp::Parameter>& parameters) {
-      std::lock_guard<std::mutex> lock(mutex_);
-      for (const auto& param : parameters) {
-        if (param.get_name() == "point_x") {
-          point_x_ = param.as_int();
-        } else if (param.get_name() == "point_y") {
-          point_y_ = param.as_int();
-        } else if (param.get_name() == "max_temp_limit") {
-          max_temp_limit_ = param.as_int();
-        } else if (param.get_name() == "min_temp_limit") {
-          min_temp_limit_ = param.as_int();
-        } else if (param.get_name() == "norm_margin") {
-          norm_margin_ = param.as_double();
+      [this](const std::vector<rclcpp::Parameter>& parameters) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& param : parameters) {
+          if (param.get_name() == "point_x") {
+            point_x_ = param.as_int();
+          } else if (param.get_name() == "point_y") {
+            point_y_ = param.as_int();
+          } else if (param.get_name() == "max_temp_limit") {
+            max_temp_limit_ = param.as_int();
+          } else if (param.get_name() == "min_temp_limit") {
+            min_temp_limit_ = param.as_int();
+          } else if (param.get_name() == "norm_margin") {
+            norm_margin_ = param.as_double();
+          }
         }
-      }
-      rcl_interfaces::msg::SetParametersResult result;
-      result.successful = true;
-      return result;
-    });
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        return result;
+      });
 
   init_timer_ = this->create_wall_timer(
     std::chrono::milliseconds(0),
-    [this]() {
-      this->init_timer_->cancel(); // Prevent it from looping
-      this->init();
-    });
+      [this] {
+        this->init_timer_->cancel();  // Prevent it from looping
+        this->init();
+      });
 }
 
 #else
@@ -234,10 +232,10 @@ void BosonCamera::onInit() {
   // The callback has to be spelled out as a boost::function to disambiguate
   // the two setCallback() overloads of the reconfigure server.
   reconfigure_server_->setCallback(
-    boost::function<void (flir_boson_usb::BosonCameraConfig&, uint32_t)>(
-      [this](flir_boson_usb::BosonCameraConfig& config, uint32_t level) {
-        this->reconfigureCallback(config, level);
-      }));
+    boost::function<void(flir_boson_usb::BosonCameraConfig&, uint32_t)>(
+          [this](flir_boson_usb::BosonCameraConfig& config, uint32_t level) {
+            this->reconfigureCallback(config, level);
+          }));
 
   this->init();
 }
@@ -263,9 +261,10 @@ void BosonCamera::validateParams() {
     frame_rate_ = 1.0;
   }
 
-  const auto clip_valid = [](const double p) {
-    return std::isfinite(p) && p >= 0.0 && p < 50.0;
-  };
+  const auto clip_valid =
+    [](const double p) {
+      return std::isfinite(p) && p >= 0.0 && p < 50.0;
+    };
   if (!clip_valid(raw16_agc_low_pct_) || !clip_valid(raw16_agc_high_pct_)) {
     CRAS_WARN(
       "Invalid AGC clip percentages (%.2f / %.2f). Reverting to 1.0 / 1.0.", raw16_agc_low_pct_, raw16_agc_high_pct_);
@@ -457,9 +456,9 @@ void BosonCamera::init() {
 #else
   capture_timer_ = nh_.createTimer(
     ros::Duration(period),
-    [this](const ros::TimerEvent& /* event */) {
-      this->captureAndPublish();
-    });
+      [this](const ros::TimerEvent& /* event */) {
+        this->captureAndPublish();
+      });
 #endif
 }
 
@@ -472,8 +471,8 @@ void BosonCamera::agc(
   output_16 = input_16.clone();
 
   int histSize = 65536;
-  float range[] = { 0, 65536 };
-  const float* histRange = { range };
+  float range[] = {0, 65536};
+  const float* histRange = {range};
 
   // Reuses the pre-allocated hist_ member variable
   cv::calcHist(&input_16, 1, 0, cv::Mat(), hist_, 1, &histSize, &histRange, true, false);
@@ -483,7 +482,7 @@ void BosonCamera::agc(
   double clip_high_count = (clip_high_pct / 100.0) * total_pixels;
 
   int min_val = 0, max_val = 65535;
-  double current_count = 0.0; // double prevents truncation on large sensors
+  double current_count = 0.0;  // double prevents truncation on large sensors
 
   // Find bottom percentile
   for (int i = 0; i < histSize; i++) {
@@ -505,7 +504,7 @@ void BosonCamera::agc(
   }
 
   if (max_val <= min_val) {
-    max_val = min_val + 1; // Prevent division by zero
+    max_val = min_val + 1;  // Prevent division by zero
   }
 
   *max_temp = max_val / 100. - 273.15;
@@ -550,7 +549,7 @@ bool BosonCamera::openCamera() {
   int requested_height = (sensor_type_ == SensorTypes::Boson640) ? 512 : 256;
 
   if (zoom_enable_ && sensor_type_ == SensorTypes::Boson320 && video_mode_ == Encoding::RAW16) {
-    thermal16_linear_zoom_ = Mat(512, 640, CV_8UC1);
+    thermal16_linear_zoom_ = cv::Mat(512, 640, CV_8UC1);
   }
 
   // 2. Set format parameters
@@ -579,7 +578,8 @@ bool BosonCamera::openCamera() {
 
   // YUV unpack path assumes tightly packed planes. Assert that here.
   if (video_mode_ == Encoding::YUV && format.fmt.pix.bytesperline != 0 &&
-      format.fmt.pix.bytesperline != format.fmt.pix.width) {
+      format.fmt.pix.bytesperline != format.fmt.pix.width)
+  {
     CRAS_ERROR(
       "Driver reports YUV bytesperline=%u but width=%u. Strided YUV buffers are not supported by this node.",
       format.fmt.pix.bytesperline, format.fmt.pix.width);
@@ -609,8 +609,8 @@ bool BosonCamera::openCamera() {
   if (ioctl(fd_, VIDIOC_G_PARM, &streamparm) == 0) {
     if (streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
       double hw_fps =
-        (double)streamparm.parm.capture.timeperframe.denominator /
-          (double)streamparm.parm.capture.timeperframe.numerator;
+        static_cast<double>(streamparm.parm.capture.timeperframe.denominator) /
+        static_cast<double>(streamparm.parm.capture.timeperframe.numerator);
 
       if (frame_rate_ > hw_fps + 1.0) {  // +1.0 for floating point margin
         CRAS_WARN(
@@ -664,7 +664,7 @@ bool BosonCamera::openCamera() {
   // Pre-allocate output Mats to expected_height_
   thermal16_linear_ = cv::Mat(expected_height_, width_, CV_8UC1);
   thermal8_linear_ = cv::Mat(expected_height_, width_, CV_16UC1);
-  thermal8_norm_ = Mat(expected_height_, width_, CV_8U, 1);
+  thermal8_norm_ = cv::Mat(expected_height_, width_, CV_8U, 1);
   if (video_mode_ == Encoding::YUV && publish_color_) {
     thermal_rgb_ = cv::Mat(height_, width_, CV_8UC3);
   }
@@ -726,7 +726,8 @@ void BosonCamera::captureAndPublish() {
 #endif
 
   if ((bufferinfo.flags & V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) &&
-      (bufferinfo.timestamp.tv_sec > 0 || bufferinfo.timestamp.tv_usec > 0)) {
+      (bufferinfo.timestamp.tv_sec > 0 || bufferinfo.timestamp.tv_usec > 0))
+  {
 #ifdef ROS2
     using rclcpp::Time;
 #else
@@ -769,7 +770,7 @@ void BosonCamera::captureAndPublish() {
 #endif
       return;
     }
-  } else { // YUV
+  } else {  // YUV
     cv::Mat thermal_luma(height_ + height_ / 2, width_, CV_8UC1, current_buffer);
     if (publish_color_) {
       if (is_yv12_) {
@@ -796,12 +797,12 @@ void BosonCamera::captureAndPublish() {
       cv_img.image = thermal16_linear_;
     }
     cv_img.encoding = "mono16";
-  } else { // YUV
+  } else {  // YUV
     if (publish_color_) {
       cv_img.image = thermal_rgb_(cv::Rect(0, 0, width_, expected_height_));
       cv_img.encoding = "bgr8";
     } else {
-      cv_img.encoding = "mono8"; // image already populated in Phase A
+      cv_img.encoding = "mono8";  // image already populated in Phase A
     }
   }
 

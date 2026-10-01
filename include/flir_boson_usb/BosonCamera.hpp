@@ -78,11 +78,11 @@ enum class SensorTypes {
   Boson640,
 };
 
-class BosonCamera :
+class BosonCamera
 #ifdef ROS2
-  public rclcpp::Node
+    : public rclcpp::Node
 #else
-  public cras::Nodelet
+: public cras::Nodelet
 #endif
 {
 public:
@@ -152,8 +152,8 @@ private:
   cv::Point temp_ptr_;
 
   // OpenCV Mats (Pre-allocated to prevent memory churn)
-  cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_,
-    thermal8_heatmap_, thermal8_temp_, thermal8_norm_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
+  cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_;
+  cv::Mat thermal8_heatmap_, thermal8_temp_, thermal8_norm_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
 
   Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
 
