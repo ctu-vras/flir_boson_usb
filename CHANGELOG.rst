@@ -36,6 +36,7 @@ Changelog for package flir_boson_usb
 ..
 ..   * The stamped readings are printed in the unit of ``temp_mode`` and carry its unit (``26.85 deg C``, ``2685 cdeg C``) instead of always degrees Celsius. A non-radiometric camera, for which no absolute temperature exists, prints the raw 16-bit counts instead (``30000 counts``).
 ..   * The text is drawn white on a black outline, so it stays readable whatever colour the palette picks for the pixels under it.
+..   * ``overlay_mode`` offers ``min_max`` (the bounds text, stamped even when the probe point is outside the published image) and ``ptr`` (the probe text and its marker) next to ``none`` and ``min_max_ptr``.
 ..
 .. * Launch files
 ..

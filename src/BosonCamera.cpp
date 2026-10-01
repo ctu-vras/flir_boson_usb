@@ -249,8 +249,9 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     "overlay_mode", "min_max_ptr",
     paramDesc(
       "What is stamped on image_heatmap. none: nothing. min_max_ptr: the minimum, maximum and probe reading text and "
-      "the probe marker, printed in the unit of temp_mode (in raw counts for a non-radiometric camera). Only honoured "
-      "when a heatmap is published.",
+      "the probe marker. min_max: the minimum and maximum reading text only. ptr: the probe reading text and the "
+      "probe marker. The readings are printed in the unit of temp_mode (in raw counts for a non-radiometric camera). "
+      "Only honoured when a heatmap is published.",
       overlayList("|")));
   colormap_str_ = this->declare_parameter(
     "colormap", "jet",

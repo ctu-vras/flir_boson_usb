@@ -102,7 +102,7 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `agc_norm` (dynamic param) | Renormalise `image_visual` to the bounds observed on the current frame, on top of whichever `agc_mode` produced them. | `False` |
 | `agc_norm_margin` (dynamic param) | How much wider the observed bounds are taken when `agc_norm` is on. Non-zero values mean the given number of lowest and highest grey levels of the active stretch are not used in the linear stretch. | `20.0` |
 | `heatmap_mode` | Content of `image_heatmap`. `none`: the topic is not created at all. `visual`: colourise `image_visual`. Requires an `agc_mode` other than `none`. | `none` |
-| `overlay_mode` (dynamic param) | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe reading text and the probe marker, printed in the unit of `temp_mode`. See [The heatmap overlay](#the-heatmap-overlay). | `min_max_ptr` |
+| `overlay_mode` (dynamic param) | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe reading text and the probe marker. `min_max`: the minimum and maximum text only. `ptr`: the probe text and marker only. Printed in the unit of `temp_mode`. See [The heatmap overlay](#the-heatmap-overlay). | `min_max_ptr` |
 | `colormap` (dynamic param) | Palette `image_heatmap` is painted with. `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`, `spring`, `cool`, `hsv`, `pink` and `hot` are always available; `parula` needs OpenCV 4.0 or newer, `magma`, `inferno`, `plasma`, `viridis` and `cividis` need 4.4, and `twilight`, `twilight_shifted`, `turbo` and `deepgreen` need 4.5. Case is ignored. A palette the built OpenCV does not have is not offered, and an unknown value keeps the palette used so far (at startup it stops the node). | `jet` |
 | `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit as `32FC1`. `centi_c`, `centi_k`, `centi_f`: the same three units in hundredths, as `16SC1`, `16UC1` and `16SC1`. Only offered for radiometric cameras; see [Temperature units](#temperature-units). | `none` |
 | `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: match the device identification against `radiometric_patterns`. `true`/`false`: override the detection. | `auto` |
@@ -160,9 +160,20 @@ encoding it carries, and both are fixed when the publishers are created.
 
 ### The heatmap overlay
 
-`overlay_mode:=min_max_ptr` stamps three readings and the probe marker on `image_heatmap`. `Max` and `Min` are the
-bounds of the stretch the visible pixels were made from, `Ptr` is the reading at `point_x`/`point_y`, and all three
-are printed in the unit of `temp_mode`, with the unit written next to the number:
+`overlay_mode` chooses what is stamped on `image_heatmap`. `Max` and `Min` are the bounds of the stretch the visible
+pixels were made from, `Ptr` is the reading at `point_x`/`point_y`, and the probe marker sits at the same point:
+
+| `overlay_mode` | stamped |
+| :--- | :--- |
+| `none` | nothing |
+| `min_max_ptr` | the `Max`, `Min` and `Ptr` text and the probe marker |
+| `min_max` | the `Max` and `Min` text only, i.e. no probe marker |
+| `ptr` | the `Ptr` text and the probe marker |
+
+The bounds describe the picture and are stamped whatever the probe point is; the probe text and its marker need a
+probe inside the published image and are left out when `point_x`/`point_y` is outside of it.
+
+Every reading that is stamped is printed in the unit of `temp_mode`, with the unit written next to the number:
 
 | camera and `temp_mode` | stamped text |
 | :--- | :--- |

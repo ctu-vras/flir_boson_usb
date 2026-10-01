@@ -543,10 +543,10 @@ TEST(Pipeline, OverlayIsStampedOnTheHeatmap) {
 
 TEST(Pipeline, OverlayModeNamesRoundTrip) {
   // The offered list is the parameter surface: everything the node accepts is listed, nothing else.
-  const std::vector<std::string> expected{"none", "min_max_ptr"};
+  const std::vector<std::string> expected{"none", "min_max_ptr", "min_max", "ptr"};
   EXPECT_EQ(expected, overlayModeNames());
 
-  for (const OverlayMode mode : {OverlayMode::None, OverlayMode::MinMaxPtr}) {
+  for (const OverlayMode mode : {OverlayMode::None, OverlayMode::MinMaxPtr, OverlayMode::MinMax, OverlayMode::Ptr}) {
     OverlayMode parsed;
     ASSERT_TRUE(overlayModeFromString(expected[static_cast<size_t>(mode)], parsed));
     EXPECT_EQ(static_cast<int>(mode), static_cast<int>(parsed));
@@ -554,10 +554,76 @@ TEST(Pipeline, OverlayModeNamesRoundTrip) {
 
   // An unknown name is refused and leaves the value alone. The node lower-cases the name before calling.
   OverlayMode untouched = OverlayMode::MinMaxPtr;
-  EXPECT_FALSE(overlayModeFromString("min_max", untouched));
+  EXPECT_FALSE(overlayModeFromString("min_maxptr", untouched));
   EXPECT_FALSE(overlayModeFromString("MIN_MAX_PTR", untouched));
   EXPECT_FALSE(overlayModeFromString("", untouched));
   EXPECT_EQ(static_cast<int>(OverlayMode::MinMaxPtr), static_cast<int>(untouched));
+}
+
+TEST(Pipeline, OverlayContentSelectsWhatIsStamped) {
+  const cv::Mat frame = outlierFrame();
+  auto config = defaultConfig();
+  config.agc_mode = AgcMode::AutoRange;
+  config.heatmap_mode = HeatmapMode::Visual;
+  config.temp_mode = TempMode::DegC;
+  config.radiometric = true;
+  config.probe_x = 60;
+  config.probe_y = 60;
+
+  config.overlay_mode = OverlayMode::None;
+  const cv::Mat bare = stampHeatmap(config, frame);
+  config.overlay_mode = OverlayMode::MinMaxPtr;
+  const cv::Mat min_max_ptr = stampHeatmap(config, frame);
+  config.overlay_mode = OverlayMode::MinMax;
+  const cv::Mat min_max = stampHeatmap(config, frame);
+  config.overlay_mode = OverlayMode::Ptr;
+  const cv::Mat ptr = stampHeatmap(config, frame);
+
+  EXPECT_NE(0.0, cv::sum(min_max_ptr != bare)[0]);
+  EXPECT_NE(0.0, cv::sum(min_max != bare)[0]);
+  EXPECT_NE(0.0, cv::sum(ptr != bare)[0]);
+
+  // The stamped lines are laid out from the top of the image downwards, so a content that leaves a line
+  // out draws nothing where that line would be. The probe marker sits at (60, 60), below them all.
+  // min_max: the two bounds lines and no marker ...
+  EXPECT_NE(0.0, cv::sum(min_max.rowRange(25, 40) != bare.rowRange(25, 40))[0]);
+  EXPECT_EQ(0.0, cv::sum(min_max.rowRange(40, kRows) != bare.rowRange(40, kRows))[0]);
+  // ptr: a single line, so the band under it is left to the marker alone ...
+  EXPECT_EQ(0.0, cv::sum(ptr.rowRange(25, 50) != bare.rowRange(25, 50))[0]);
+  EXPECT_NE(0.0, cv::sum(ptr.rowRange(50, kRows) != bare.rowRange(50, kRows))[0]);
+  // min_max_ptr: both the second line and the marker are there.
+  EXPECT_NE(0.0, cv::sum(min_max_ptr.rowRange(25, 50) != bare.rowRange(25, 50))[0]);
+  EXPECT_NE(0.0, cv::sum(min_max_ptr.rowRange(50, kRows) != bare.rowRange(50, kRows))[0]);
+  // The marker is the same wherever it is stamped, and only the bounds content leaves the probe out.
+  EXPECT_EQ(ptr.at<cv::Vec3b>(60, 60), min_max_ptr.at<cv::Vec3b>(60, 60));
+  EXPECT_EQ(bare.at<cv::Vec3b>(60, 60), min_max.at<cv::Vec3b>(60, 60));
+}
+
+TEST(Pipeline, BoundsOverlayIsStampedWithoutAProbe) {
+  const cv::Mat frame = outlierFrame();
+  auto config = defaultConfig();
+  config.agc_mode = AgcMode::AutoRange;
+  config.heatmap_mode = HeatmapMode::Visual;
+  config.temp_mode = TempMode::DegC;
+  config.radiometric = true;
+  // The probe is not in the published image, so there is no probe reading to print.
+  config.probe_x = -1;
+  config.probe_y = -1;
+
+  config.overlay_mode = OverlayMode::None;
+  const cv::Mat bare = stampHeatmap(config, frame);
+  config.overlay_mode = OverlayMode::MinMax;
+  const cv::Mat min_max = stampHeatmap(config, frame);
+  config.overlay_mode = OverlayMode::Ptr;
+  const cv::Mat ptr = stampHeatmap(config, frame);
+  config.overlay_mode = OverlayMode::MinMaxPtr;
+  const cv::Mat min_max_ptr = stampHeatmap(config, frame);
+
+  // The bounds are the stretch the picture was made from, which is known without a probe ... while the
+  // contents that print the probe have nothing to print and leave the picture alone.
+  EXPECT_NE(0.0, cv::sum(min_max != bare)[0]);
+  EXPECT_EQ(0.0, cv::sum(ptr != bare)[0]);
+  EXPECT_EQ(0.0, cv::sum(min_max_ptr != bare)[0]);
 }
 
 TEST(Pipeline, OverlayValueIsPrintedInTheConfiguredUnit) {

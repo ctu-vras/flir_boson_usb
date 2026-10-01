@@ -169,7 +169,7 @@ double countsToTempUnit(const double counts, const flir_boson_usb::TempMode mode
  * The position of each name is the value of the equally positioned OverlayMode enumerator.
  */
 const std::vector<const char*>& overlayModeTable() {
-  static const std::vector<const char*> table = {"none", "min_max_ptr"};
+  static const std::vector<const char*> table = {"none", "min_max_ptr", "min_max", "ptr"};
   return table;
 }
 
@@ -370,16 +370,25 @@ std::string formatOverlayValue(const double counts, const TempMode mode, const b
   return std::string(text);
 }
 
-void drawOverlay(cv::Mat& image, const double min_counts, const double max_counts, const double probe_counts,
-    cv::Point probe, const TempMode mode, const bool radiometric) {
+void drawOverlay(cv::Mat& image, const OverlayMode content, const double min_counts, const double max_counts,
+    const double probe_counts, cv::Point probe, const TempMode mode, const bool radiometric) {
   CV_Assert(image.type() == CV_8UC3);
+  if (content == OverlayMode::None) {
+    return;
+  }
+
+  const bool want_bounds = content == OverlayMode::MinMaxPtr || content == OverlayMode::MinMax;
+  const bool want_probe = content == OverlayMode::MinMaxPtr || content == OverlayMode::Ptr;
 
   const int font = cv::FONT_HERSHEY_SIMPLEX;
-  const std::vector<std::string> texts = {
-    "Max: " + formatOverlayValue(max_counts, mode, radiometric),
-    "Min: " + formatOverlayValue(min_counts, mode, radiometric),
-    "Ptr: " + formatOverlayValue(probe_counts, mode, radiometric),
-  };
+  std::vector<std::string> texts;
+  if (want_bounds) {
+    texts.push_back("Max: " + formatOverlayValue(max_counts, mode, radiometric));
+    texts.push_back("Min: " + formatOverlayValue(min_counts, mode, radiometric));
+  }
+  if (want_probe) {
+    texts.push_back("Ptr: " + formatOverlayValue(probe_counts, mode, radiometric));
+  }
   for (size_t line = 0; line < texts.size(); ++line) {
     // The palette paints whatever colour the value under the text happens to have, so the text is drawn
     // white on a black outline to stay readable on all of them.
@@ -388,8 +397,10 @@ void drawOverlay(cv::Mat& image, const double min_counts, const double max_count
     cv::putText(image, texts[line], origin, font, 0.4, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
   }
 
-  cv::circle(image, probe, 3, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
-  cv::circle(image, probe, 2, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
+  if (want_probe) {
+    cv::circle(image, probe, 3, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
+    cv::circle(image, probe, 2, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
+  }
 }
 
 bool matchAnyPattern(const std::vector<std::string>& candidates, const std::vector<std::string>& patterns,
@@ -501,10 +512,13 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
 
   if (want_heatmap) {
     cv::applyColorMap(visual8_, heatmap8_, cvColormap(config_.colormap));
-    if (want_overlay && probe_ok) {
+    // Only the probe content needs a probe inside the published image; the bounds text describes the
+    // stretch and is stamped whatever the probe point is.
+    const bool needs_probe = config_.overlay_mode != OverlayMode::MinMax;
+    if (want_overlay && (probe_ok || !needs_probe)) {
       // The stamped readings are in the unit of the temperature image, or in counts when the camera
       // cannot be turned into absolute temperatures.
-      drawOverlay(heatmap8_, bounds.min_counts, bounds.max_counts, probe_counts,
+      drawOverlay(heatmap8_, config_.overlay_mode, bounds.min_counts, bounds.max_counts, probe_counts,
           cv::Point(config_.probe_x, config_.probe_y), config_.temp_mode, config_.radiometric);
     }
     out.heatmap = true;

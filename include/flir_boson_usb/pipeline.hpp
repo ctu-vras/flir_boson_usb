@@ -48,10 +48,17 @@ enum class HeatmapMode {
   Visual = 1,  //!< Colourise the visual output.
 };
 
-//! \brief What is stamped on top of the colourised image.
+/**
+ * \brief What is stamped on top of the colourised image.
+ *
+ * The numbering has to match the name table in pipeline.cpp. The three contents differ only in which of
+ * the readings are stamped; every reading that is stamped is printed in the unit of the temperature mode.
+ */
 enum class OverlayMode {
   None = 0,
   MinMaxPtr = 1,  //!< Minimum, maximum and probe reading text plus the probe marker.
+  MinMax = 2,  //!< Minimum and maximum reading text only, i.e. no probe marker.
+  Ptr = 3,  //!< Probe reading text plus the probe marker.
 };
 
 /**
@@ -215,8 +222,12 @@ void stretchTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds)
 std::string formatOverlayValue(double counts, TempMode mode, bool radiometric);
 
 /**
- * \brief Stamp the minimum, maximum and probe reading text and the probe marker onto a colour image.
+ * \brief Stamp the reading text and the probe marker selected by the overlay content onto a colour image.
+ *
+ * \p content selects what is stamped: the bounds text, the probe text and its marker, or both. The lines
+ * that are stamped are always laid out from the top of the image downwards in the order Max, Min, Ptr.
  * \param[in,out] image The image to draw on, CV_8UC3.
+ * \param[in] content Which of the readings are stamped; OverlayMode::None stamps nothing.
  * \param[in] min_counts The lower bound of the stretch, in raw 16-bit counts.
  * \param[in] max_counts The upper bound of the stretch, in raw 16-bit counts.
  * \param[in] probe_counts The reading at the probe, in raw 16-bit counts.
@@ -224,8 +235,8 @@ std::string formatOverlayValue(double counts, TempMode mode, bool radiometric);
  * \param[in] mode The unit the readings are printed in; see formatOverlayValue().
  * \param[in] radiometric Whether the counts carry absolute temperatures.
  */
-void drawOverlay(cv::Mat& image, double min_counts, double max_counts, double probe_counts, cv::Point probe,
-    TempMode mode, bool radiometric);
+void drawOverlay(cv::Mat& image, OverlayMode content, double min_counts, double max_counts, double probe_counts,
+    cv::Point probe, TempMode mode, bool radiometric);
 
 /**
  * \brief Check whether any of the candidate strings matches any of the regular expressions.
