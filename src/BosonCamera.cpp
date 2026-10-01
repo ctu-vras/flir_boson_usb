@@ -110,7 +110,11 @@ inline rcl_interfaces::msg::ParameterDescriptor paramDescRangeF(
 }
 
 BosonCamera::BosonCamera(const rclcpp::NodeOptions & options)
-    : Node("boson_camera", options), fd_(-1) {
+    : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
+      max_temp_(0.0), min_temp_(0.0), ptr_temp_(0.0), frame_rate_(0.0), video_mode_(Encoding::YUV), zoom_enable_(false),
+      publish_color_(false), is_yv12_(false), raw16_agc_low_pct_(0.0), raw16_agc_high_pct_(0.0),
+      sensor_type_(SensorTypes::Boson640), point_x_(0), point_y_(0), max_temp_limit_(0), min_temp_limit_(0),
+      norm_margin_(20.0) {
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
     "dev", "/dev/video0", paramDesc("the linux file descriptor location for the camera"));
