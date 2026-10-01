@@ -28,6 +28,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
+#include <glob.h>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -44,6 +45,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <cras_cpp_common/string_utils.hpp>
 #include <flir_boson_usb/BosonCamera.hpp>
 
 #ifdef ROS2
@@ -271,6 +273,68 @@ void BosonCamera::validateParams() {
   }
 }
 
+inline std::string BosonCamera::detectSerial() const {
+  if (dev_path_.empty()) {
+    return "";
+  }
+
+  auto resolved_device_path = realpath(dev_path_.c_str(), nullptr);
+  if (resolved_device_path == nullptr) {
+    return "";
+  }
+
+  const std::string resolved_device(resolved_device_path);
+  free(resolved_device_path);
+
+  glob_t globbuf;
+  if (glob("/dev/v4l/by-id/*", 0, nullptr, &globbuf) != 0) {
+    return "";
+  }
+
+  std::string target_identifier;
+  char resolved_path[PATH_MAX];
+
+  for (size_t i = 0; i < globbuf.gl_pathc; ++i) {
+    // Resolve the symlink (e.g., /dev/v4l/by-id/usb-... -> ../../video0)
+    if (realpath(globbuf.gl_pathv[i], resolved_path) != nullptr) {
+      if (resolved_device == std::string(resolved_path)) {
+        // Extract the identifier string from the symlink path
+        const std::string full_path(globbuf.gl_pathv[i]);
+        const auto last_slash = full_path.find_last_of('/');
+        if (last_slash != std::string::npos) {
+          target_identifier = full_path.substr(last_slash + 1);
+        }
+        break;
+      }
+    }
+  }
+  globfree(&globbuf);
+
+  // target_identifier should now contain a string like "usb-Manufacturer_Camera_Name_SN123456-video-index0"
+  CRAS_INFO("Identified camera device as: %s", target_identifier.c_str());
+
+  const auto parts = cras::split(target_identifier, "-");
+  if (parts.size() < 3) {
+    return "";
+  }
+  if (!cras::startsWith(parts.back(), "index")) {
+    return "";
+  }
+  if (parts[parts.size() - 2] != "video") {
+    return "";
+  }
+
+  const auto parts2 = cras::split(parts[parts.size() - 3], "_");
+  if (parts2.size() < 2) {
+    return "";
+  }
+
+  const auto& serial = parts2.back();
+  CRAS_INFO("Identified camera serial as: %s", serial.c_str());
+
+  return serial;
+}
+
 void BosonCamera::init() {
   CRAS_INFO("Initializing FLIR Boson on %s", dev_path_.c_str());
 #ifdef ROS2
@@ -334,6 +398,12 @@ void BosonCamera::init() {
     ros::shutdown();
 #endif
     return;
+  }
+
+  const auto serial = detectSerial();
+  if (!serial.empty()) {
+    CRAS_INFO("Camera serial was found. Setting camera name to: %s", serial.c_str());
+    cam_name = serial;
   }
 
   if (camera_info_url_.empty()) {

@@ -92,6 +92,7 @@ elseif(ament_cmake_FOUND)
   target_link_libraries(boson_camera_component PUBLIC
     camera_info_manager::camera_info_manager
     cras_cpp_common::cras_image_transport
+    cras_cpp_common::cras_string_utils
     cv_bridge::cv_bridge
     image_transport::image_transport
     rclcpp::rclcpp

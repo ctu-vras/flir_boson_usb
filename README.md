@@ -91,7 +91,7 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `namespace` | ROS namespace for the camera node. | `flir_boson` |
 | `frame_id` | Frame used in `header.frame_id`. | `boson_camera` |
 | `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` |
-| `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. | `Boson_640` |
+| `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. Also used as camera name if it does not have a serial number. | `Boson_640` |
 | `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` |
 | `video_mode` | Camera image format. `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no camera processing).| `YUV` |
 | `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only available on `Boson320` cameras. | `False` |
@@ -153,6 +153,8 @@ roslaunch flir_boson_usb flir_boson.launch camera_info_url:=file:///home/user/my
 Note: Files inside `example_calibrations/` act purely as format reference models. To create target matrices for your physical lens setup, use the [`camera_calibration`](https://docs.ros.org/en/jazzy/p/camera_calibration/doc/tutorial_mono.html) tools.
 
 `camera_info_url` accepts both `file://` URLs (absolute path on disk) and `package://` URLs (path relative to a ROS package share directory).
+
+The URL can also contain the substitution `${NAME}` which expands to the camera name. If this driver succeeds detecting a serial number, the name will be set to that. If not, it sets the camera name to either `Boson_320` or `Boson_640`.
 
 ## Customizing the RAW16 pipeline
 

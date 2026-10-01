@@ -100,6 +100,7 @@ private:
   bool openCamera();
   bool closeCamera();
   void captureAndPublish();
+  std::string detectSerial() const;
 
   // Custom processing utilitiesC
   void agc(
