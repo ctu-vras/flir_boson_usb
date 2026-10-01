@@ -23,11 +23,22 @@ file(ARCHIVE_EXTRACT INPUT ${download_boson_sdk_SOURCE_DIR}/boson_sdk.zip DESTIN
 set(BOSON_SDK_ROOT "${BOSON_SDK_DIR}/3.0 IDD & SDK/SDK_USER_PERMISSIONS/SDK_USER_PERMISSIONS")
 set(BOSON_SDK_FSLP_DIR "${BOSON_SDK_ROOT}/FSLP_Files")
 set(BOSON_SDK_INCLUDE_DIRS "${BOSON_SDK_ROOT}/ClientFiles_C")
-set(BOSON_SDK_LIBRARIES "${BOSON_SDK_FSLP_DIR}/FSLP_64.so")
+get_filename_component(BOSON_SDK_LIBRARY "${BOSON_SDK_FSLP_DIR}/FSLP_64.so" ABSOLUTE)
+
+# The precompiled FSLP_64.so has no SONAME. If it is linked by its full path, the linker stores
+# exactly that path as the DT_NEEDED entry of the depending library, which cannot be resolved at
+# run time any more (the path only exists inside the build tree). Link therefore through a copy
+# with a conventional lib-prefixed name and declare the library as having no SONAME, so that CMake
+# links it with -L<dir> -lFSLP_64 and the DT_NEEDED entry contains just libFSLP_64.so.
+set(BOSON_SDK_FSLP_INSTALLED_NAME "libFSLP_64.so")
+set(BOSON_SDK_FSLP_LINK_DIR "${CMAKE_CURRENT_BINARY_DIR}/fslp_lib")
+file(MAKE_DIRECTORY "${BOSON_SDK_FSLP_LINK_DIR}")
+configure_file("${BOSON_SDK_LIBRARY}" "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}" COPYONLY)
 
 add_library(FSLP_64 SHARED IMPORTED)
 set_target_properties(FSLP_64 PROPERTIES
-  IMPORTED_LOCATION "${BOSON_SDK_LIBRARIES}"
+  IMPORTED_LOCATION "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}"
+  IMPORTED_NO_SONAME TRUE
 )
 
 file(GLOB BOSON_SDK_SOURCES "${BOSON_SDK_INCLUDE_DIRS}/*.c")
@@ -35,9 +46,11 @@ set_property(SOURCE ${BOSON_SDK_SOURCES} PROPERTY LANGUAGE C)
 add_library(boson_sdk SHARED ${BOSON_SDK_SOURCES})
 target_include_directories(boson_sdk PUBLIC "${BOSON_SDK_INCLUDE_DIRS}")
 target_link_libraries(boson_sdk PUBLIC FSLP_64)
+# libFSLP_64.so is installed next to this library, so look for it in the same directory.
+set_target_properties(boson_sdk PROPERTIES INSTALL_RPATH "$ORIGIN")
 
 message(STATUS "BOSON_SDK_INCLUDE_DIRS: ${BOSON_SDK_INCLUDE_DIRS}")
-message(STATUS "BOSON_SDK_LIBRARIES: ${BOSON_SDK_LIBRARIES}")
+message(STATUS "BOSON_SDK_LIBRARY: ${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}")
 
 add_library(boson_api SHARED src/boson_api.cpp)
 target_link_libraries(boson_api PRIVATE boson_sdk)
@@ -84,6 +97,11 @@ if(catkin_FOUND)
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  )
+
+  install(FILES "${BOSON_SDK_LIBRARY}"
+    DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+    RENAME ${BOSON_SDK_FSLP_INSTALLED_NAME}
   )
 
   install(DIRECTORY launch
@@ -171,6 +189,11 @@ elseif(ament_cmake_FOUND)
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
+  )
+
+  install(FILES "${BOSON_SDK_LIBRARY}"
+    DESTINATION lib
+    RENAME ${BOSON_SDK_FSLP_INSTALLED_NAME}
   )
 
   install(DIRECTORY launch

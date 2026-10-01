@@ -13,11 +13,12 @@ extern "C" {
 #include <Client_API.h>
 #include <EnumTypes.h>
 #include <UART_Connector.h>
+
+// FSLP_64.so is a pure C library, the declaration must not be C++-mangled.
+int32_t FSLP_lookup_port_id(char*port_name, int32_t len);
 }
 
 #include <flir_boson_usb/boson_api.hpp>
-
-extern int32_t FSLP_lookup_port_id(char*port_name, int32_t len);
 
 template<int N>
 std::string to_string(const uint8_t value[N]) {
