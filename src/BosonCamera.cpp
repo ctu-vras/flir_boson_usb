@@ -879,18 +879,21 @@ void BosonCamera::createPublishers() {
 #ifdef ROS2
   const auto cam_pub_qos = rclcpp::SystemDefaultsQoS().keep_last(static_cast<size_t>(queue_size_));
   const auto cam_pub_qos_rmw = cam_pub_qos.get_rmw_qos_profile();
-  image_pub_ = image_transport::create_camera_publisher(this, "image_raw", cam_pub_qos_rmw);
+  rclcpp::PublisherOptions opts {};
+  opts.qos_overriding_options = rclcpp::QosOverridingOptions::with_default_policies();
+
+  image_pub_ = image_transport::create_camera_publisher(this, "image_raw", cam_pub_qos_rmw, opts);
   if (visual) {
-    image_pub_visual_ = image_transport::create_publisher(this, "image_visual", cam_pub_qos_rmw);
+    image_pub_visual_ = image_transport::create_publisher(this, "image_visual", cam_pub_qos_rmw, opts);
   }
   if (heatmap) {
-    image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos_rmw);
+    image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos_rmw, opts);
   }
   if (temp) {
-    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos_rmw);
-    max_temp_pub_ = this->create_publisher<Temperature>("max_temp", cam_pub_qos);
-    min_temp_pub_ = this->create_publisher<Temperature>("min_temp", cam_pub_qos);
-    ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", cam_pub_qos);
+    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos_rmw, opts);
+    max_temp_pub_ = this->create_publisher<Temperature>("max_temp", cam_pub_qos, opts);
+    min_temp_pub_ = this->create_publisher<Temperature>("min_temp", cam_pub_qos, opts);
+    ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", cam_pub_qos, opts);
   }
 #else
   const uint32_t queue_size = static_cast<uint32_t>(queue_size_);
