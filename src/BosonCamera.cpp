@@ -45,6 +45,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cras_cpp_common/string_utils.hpp>
+#include <flir_boson_usb/boson_api.hpp>
 #include <flir_boson_usb/BosonCamera.hpp>
 #include <flir_boson_usb/pipeline.hpp>
 
@@ -781,6 +782,14 @@ void BosonCamera::resolveRadiometric() {
 
 void BosonCamera::init() {
   CRAS_INFO("Initializing FLIR Boson on %s", dev_path_.c_str());
+
+  try {
+    BosonAPI api("/dev/ttyACM1");
+    CRAS_WARN("PN: %s, SN: %u", api.getCameraProductNumber().c_str(), api.getCameraSerialNumber());
+  } catch (const std::exception& e) {
+    CRAS_ERROR("Failed to initialize Boson API: %s", e.what());
+  }
+
 #ifdef ROS2
   camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(this);
 #else

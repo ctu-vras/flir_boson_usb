@@ -4,11 +4,43 @@
 # SPDX-FileCopyrightText: Czech Technical University in Prague
 
 cmake_minimum_required(VERSION 3.10.2)
-project(flir_boson_usb)
+project(flir_boson_usb LANGUAGES CXX C)
 
 find_package(ament_cmake QUIET)
 #catkin_lint: ignore_once missing_required
 find_package(catkin QUIET)
+
+include(FetchContent)
+fetchcontent_declare(download_boson_sdk
+  URL https://flir.netx.net/file/asset/46046/original/attachment
+  DOWNLOAD_NAME boson_sdk.zip
+  DOWNLOAD_NO_EXTRACT true
+)
+fetchcontent_makeavailable(download_boson_sdk)
+set(BOSON_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/boson_sdk_src)
+file(ARCHIVE_EXTRACT INPUT ${download_boson_sdk_SOURCE_DIR}/boson_sdk.zip DESTINATION ${BOSON_SDK_DIR})
+
+set(BOSON_SDK_ROOT "${BOSON_SDK_DIR}/3.0 IDD & SDK/SDK_USER_PERMISSIONS/SDK_USER_PERMISSIONS")
+set(BOSON_SDK_FSLP_DIR "${BOSON_SDK_ROOT}/FSLP_Files")
+set(BOSON_SDK_INCLUDE_DIRS "${BOSON_SDK_ROOT}/ClientFiles_C")
+set(BOSON_SDK_LIBRARIES "${BOSON_SDK_FSLP_DIR}/FSLP_64.so")
+
+add_library(FSLP_64 SHARED IMPORTED)
+set_target_properties(FSLP_64 PROPERTIES
+  IMPORTED_LOCATION "${BOSON_SDK_LIBRARIES}"
+)
+
+file(GLOB BOSON_SDK_SOURCES "${BOSON_SDK_INCLUDE_DIRS}/*.c")
+set_property(SOURCE ${BOSON_SDK_SOURCES} PROPERTY LANGUAGE C)
+add_library(boson_sdk SHARED ${BOSON_SDK_SOURCES})
+target_include_directories(boson_sdk PUBLIC "${BOSON_SDK_INCLUDE_DIRS}")
+target_link_libraries(boson_sdk PUBLIC FSLP_64)
+
+message(STATUS "BOSON_SDK_INCLUDE_DIRS: ${BOSON_SDK_INCLUDE_DIRS}")
+message(STATUS "BOSON_SDK_LIBRARIES: ${BOSON_SDK_LIBRARIES}")
+
+add_library(boson_api SHARED src/boson_api.cpp)
+target_link_libraries(boson_api PRIVATE boson_sdk)
 
 if(catkin_FOUND)
   # ROS 1
@@ -45,10 +77,10 @@ if(catkin_FOUND)
 
   add_library(BosonCamera src/BosonCamera.cpp)
   add_dependencies(BosonCamera ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-  target_link_libraries(BosonCamera flir_boson_pipeline ${catkin_LIBRARIES})
+  target_link_libraries(BosonCamera flir_boson_pipeline boson_api ${catkin_LIBRARIES})
   cras_node_from_nodelet(BosonCamera ${PROJECT_NAME}::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
 
-  install(TARGETS BosonCamera flir_boson_pipeline
+  install(TARGETS boson_api boson_sdk BosonCamera flir_boson_pipeline
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -122,6 +154,7 @@ elseif(ament_cmake_FOUND)
   target_compile_definitions(boson_camera_component PRIVATE "ROS2")
   target_link_libraries(boson_camera_component PUBLIC
     flir_boson_pipeline
+    boson_api
     camera_info_manager::camera_info_manager
     cras_cpp_common::cras_image_transport
     cras_cpp_common::cras_string_utils
@@ -134,7 +167,7 @@ elseif(ament_cmake_FOUND)
   rclcpp_components_register_node(
     boson_camera_component PLUGIN "${PROJECT_NAME}::BosonCamera" EXECUTABLE boson_camera_node)
 
-  install(TARGETS boson_camera_component flir_boson_pipeline
+  install(TARGETS boson_api boson_camera_component boson_sdk flir_boson_pipeline
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
