@@ -148,8 +148,8 @@ TEST(Pipeline, PercentileBoundsClipTheOutliers) {
 TEST(Pipeline, FixedRangeMapsTheLimitsToTheFullScale) {
   auto config = defaultConfig();
   config.agc_mode = AgcMode::FixedRange;
-  config.min_limit_degC = 20.0;
-  config.max_limit_degC = 50.0;
+  config.agc_fixed_min_degC = 20.0;
+  config.agc_fixed_max_degC = 50.0;
   Pipeline pipeline;
   pipeline.configure(config);
 
@@ -175,11 +175,11 @@ TEST(Pipeline, ReadingsAreTheBoundsTheVisiblePixelsWereMadeFrom) {
   for (const AgcMode mode : {AgcMode::FixedRange, AgcMode::AutoRange}) {
     auto config = defaultConfig();
     config.agc_mode = mode;
-    config.agc_low_pct = 0.0;
-    config.agc_high_pct = 0.0;
+    config.agc_auto_low_pct = 0.0;
+    config.agc_auto_high_pct = 0.0;
     // Make both modes describe the very same stretch so the two runs can share the assertions.
-    config.min_limit_degC = countsToDegC(500.0);
-    config.max_limit_degC = countsToDegC(65000.0);
+    config.agc_fixed_min_degC = countsToDegC(500.0);
+    config.agc_fixed_max_degC = countsToDegC(65000.0);
     config.radiometric = true;
     config.temp_mode = TempMode::DegC;
     config.heatmap_mode = HeatmapMode::Visual;
@@ -365,8 +365,8 @@ TEST(Pipeline, AgcNormRenormalizesTheRawCounts) {
 
   auto config = defaultConfig();
   config.agc_mode = AgcMode::AutoRange;
-  config.agc_low_pct = 5.0;
-  config.agc_high_pct = 5.0;
+  config.agc_auto_low_pct = 5.0;
+  config.agc_auto_high_pct = 5.0;
   config.agc_norm = false;
   Pipeline plain;
   plain.configure(config);
@@ -422,8 +422,8 @@ TEST(Pipeline, DegeneratePercentileClipStaysWithinTheCountRange) {
   config.agc_mode = AgcMode::AutoRange;
   // Clipping away everything leaves no room between the two bounds; the pipeline has to invent a
   // one-count-wide stretch rather than divide by zero.
-  config.agc_low_pct = 99.9999;
-  config.agc_high_pct = 0.0001;
+  config.agc_auto_low_pct = 99.9999;
+  config.agc_auto_high_pct = 0.0001;
   Pipeline pipeline;
   pipeline.configure(config);
 
@@ -439,8 +439,8 @@ TEST(Pipeline, NarrowAndDegenerateFixedRangeStayFinite) {
   auto config = defaultConfig();
   config.agc_mode = AgcMode::FixedRange;
   // A stretch far narrower than the frame saturates, but must not produce anything but valid pixels.
-  config.min_limit_degC = 25.0;
-  config.max_limit_degC = 26.0;
+  config.agc_fixed_min_degC = 25.0;
+  config.agc_fixed_max_degC = 26.0;
   Pipeline pipeline;
   pipeline.configure(config);
 
@@ -453,7 +453,7 @@ TEST(Pipeline, NarrowAndDegenerateFixedRangeStayFinite) {
   }
 
   // A stretch with no width at all cannot be scaled; the output is defined as black.
-  config.max_limit_degC = 25.0;
+  config.agc_fixed_max_degC = 25.0;
   pipeline.configure(config);
   PipelineOutputs flat;
   ASSERT_TRUE(pipeline.process(outlierFrame(), flat));
@@ -695,8 +695,8 @@ TEST(Pipeline, OverlayTextFollowsTheConfiguredUnit) {
   const cv::Mat frame = outlierFrame();
   auto config = defaultConfig();
   config.agc_mode = AgcMode::AutoRange;
-  config.agc_low_pct = 0.0;
-  config.agc_high_pct = 0.0;
+  config.agc_auto_low_pct = 0.0;
+  config.agc_auto_high_pct = 0.0;
   config.heatmap_mode = HeatmapMode::Visual;
   config.overlay_mode = OverlayMode::MinMaxPtr;
   config.probe_x = 60;

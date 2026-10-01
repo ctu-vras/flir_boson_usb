@@ -222,10 +222,16 @@ private:
   std::string temp_encoding_;
 
   // Dynamic parameters
-  int point_x_, point_y_;
-  int max_temp_limit_, min_temp_limit_;
+  //! \brief The temperature probe point, in pixels of the published image; the point of the ptr reading.
+  int temp_ptr_x_;
+  int temp_ptr_y_;
+  //! \brief The stretch bounds of the fixed-range AGC, in degrees Celsius.
+  int agc_fixed_max_temp_, agc_fixed_min_temp_;
   bool agc_norm_;
-  double agc_low_pct_, agc_high_pct_, agc_norm_margin_;
+  //! \brief The clip percentiles of the auto-range AGC.
+  double agc_auto_low_pct_, agc_auto_high_pct_;
+  //! \brief How much wider the observed bounds are taken when agc_norm is on.
+  double agc_norm_margin_;
   //! \brief The palette name and its typed form; setColormap() keeps them in sync.
   std::string colormap_str_;
   Colormap colormap_;

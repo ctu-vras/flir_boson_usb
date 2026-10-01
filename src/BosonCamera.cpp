@@ -181,9 +181,10 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
       is_yv12_(false), frame_rate_(0.0), video_mode_(Encoding::YUV), zoom_enable_(false), yuv_color_(false),
       sensor_type_(SensorTypes::Boson640), radiometric_request_(TriState::Auto), radiometric_(false),
-      agc_mode_(AgcMode::AutoRange), heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), point_x_(0),
-      point_y_(0), max_temp_limit_(50), min_temp_limit_(20), agc_norm_(false), agc_low_pct_(1.0),
-      agc_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet), overlay_mode_(OverlayMode::MinMaxPtr) {
+      agc_mode_(AgcMode::AutoRange), heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), temp_ptr_x_(0),
+      temp_ptr_y_(0), agc_fixed_max_temp_(50), agc_fixed_min_temp_(20), agc_norm_(false), agc_auto_low_pct_(1.0),
+      agc_auto_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet),
+      overlay_mode_(OverlayMode::MinMaxPtr) {
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
     "dev", "/dev/video0", paramDesc("the linux file descriptor location for the camera"));
@@ -214,17 +215,17 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     paramDesc(
       "Content of the image_visual topic. "
       "none: no visual topic. "
-      "fixed_range: stretch [min_temp_limit, max_temp_limit] onto the grey scale. "
-      "auto_range: stretch the percentiles of the current frame given by agc_low_pct and agc_high_pct.",
+      "fixed_range: stretch [agc_fixed_min_temp, agc_fixed_max_temp] onto the grey scale. "
+      "auto_range: stretch the percentiles of the current frame given by agc_auto_low_pct and agc_auto_high_pct.",
       "none|fixed_range|auto_range"));
-  agc_low_pct_ = this->declare_parameter(
-    "agc_low_pct", 1.0,
+  agc_auto_low_pct_ = this->declare_parameter(
+    "agc_auto_low_pct", 1.0,
     paramDescRangeF(
       "Bottom-tail clip percentage of the frame AGC (1.0 discards the darkest 1% of pixels before the linear "
       "stretch). Only honoured in agc_mode:=auto_range. Valid range [0, 50).",
       0.0, 50.0));
-  agc_high_pct_ = this->declare_parameter(
-    "agc_high_pct", 1.0,
+  agc_auto_high_pct_ = this->declare_parameter(
+    "agc_auto_high_pct", 1.0,
     paramDescRangeF(
       "Top-tail clip percentage of the frame AGC (1.0 discards the brightest 1% of pixels before the linear "
       "stretch). Only honoured in agc_mode:=auto_range. Valid range [0, 50).",
@@ -268,14 +269,18 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
   camera_info_url_ = this->declare_parameter(
     "camera_info_url", "",
     paramDesc("Camera calibration file URL (file:// or package://). Empty publishes uncalibrated CameraInfo."));
-  point_x_ = this->declare_parameter(
-    "point_x", is640 ? 319 : 159, paramDescRangeI("X coord of the temperature probe point", 0, is640 ? 639 : 319));
-  point_y_ = this->declare_parameter(
-    "point_y", is640 ? 255 : 127, paramDescRangeI("Y coord of the temperature probe point", 0, is640 ? 511 : 255));
-  max_temp_limit_ = this->declare_parameter(
-    "max_temp_limit", 50, paramDescRangeI("Upper bound of the fixed_range stretch in degrees Celsius.", -273, 382));
-  min_temp_limit_ = this->declare_parameter(
-    "min_temp_limit", 20, paramDescRangeI("Lower bound of the fixed_range stretch in degrees Celsius.", -273, 382));
+  temp_ptr_x_ = this->declare_parameter(
+    "temp_ptr_x", is640 ? 319 : 159,
+    paramDescRangeI(
+      "X coord of the temperature probe point, whose reading is published on ptr_temp", 0, is640 ? 639 : 319));
+  temp_ptr_y_ = this->declare_parameter(
+    "temp_ptr_y", is640 ? 255 : 127,
+    paramDescRangeI(
+      "Y coord of the temperature probe point, whose reading is published on ptr_temp", 0, is640 ? 511 : 255));
+  agc_fixed_max_temp_ = this->declare_parameter(
+    "agc_fixed_max_temp", 50, paramDescRangeI("Upper bound of the fixed_range stretch in degrees Celsius.", -273, 382));
+  agc_fixed_min_temp_ = this->declare_parameter(
+    "agc_fixed_min_temp", 20, paramDescRangeI("Lower bound of the fixed_range stretch in degrees Celsius.", -273, 382));
   radiometric_str_ = this->declare_parameter(
     "radiometric", "auto",
     paramDesc(
@@ -300,13 +305,13 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
         {
           std::lock_guard<std::mutex> lock(mutex_);
           // The values the parameters had before this call, so that a rejected change leaves them alone.
-          const int point_x = point_x_;
-          const int point_y = point_y_;
-          const int max_temp_limit = max_temp_limit_;
-          const int min_temp_limit = min_temp_limit_;
+          const int temp_ptr_x = temp_ptr_x_;
+          const int temp_ptr_y = temp_ptr_y_;
+          const int agc_fixed_max_temp = agc_fixed_max_temp_;
+          const int agc_fixed_min_temp = agc_fixed_min_temp_;
           const bool agc_norm = agc_norm_;
-          const double agc_low_pct = agc_low_pct_;
-          const double agc_high_pct = agc_high_pct_;
+          const double agc_auto_low_pct = agc_auto_low_pct_;
+          const double agc_auto_high_pct = agc_auto_high_pct_;
           const double agc_norm_margin = agc_norm_margin_;
           const std::string colormap = colormap_str_;
           const Colormap palette = colormap_;
@@ -315,22 +320,22 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
           //! \brief The reason for the first value this call refused; empty when everything was accepted.
           std::string rejected;
           for (const auto& param : parameters) {
-            if (param.get_name() == "point_x") {
-              point_x_ = param.as_int();
-            } else if (param.get_name() == "point_y") {
-              point_y_ = param.as_int();
-            } else if (param.get_name() == "max_temp_limit") {
-              max_temp_limit_ = param.as_int();
-            } else if (param.get_name() == "min_temp_limit") {
-              min_temp_limit_ = param.as_int();
+            if (param.get_name() == "temp_ptr_x") {
+              temp_ptr_x_ = param.as_int();
+            } else if (param.get_name() == "temp_ptr_y") {
+              temp_ptr_y_ = param.as_int();
+            } else if (param.get_name() == "agc_fixed_max_temp") {
+              agc_fixed_max_temp_ = param.as_int();
+            } else if (param.get_name() == "agc_fixed_min_temp") {
+              agc_fixed_min_temp_ = param.as_int();
             } else if (param.get_name() == "agc_norm") {
               agc_norm_ = param.as_bool();
             } else if (param.get_name() == "agc_norm_margin") {
               agc_norm_margin_ = param.as_double();
-            } else if (param.get_name() == "agc_low_pct") {
-              agc_low_pct_ = param.as_double();
-            } else if (param.get_name() == "agc_high_pct") {
-              agc_high_pct_ = param.as_double();
+            } else if (param.get_name() == "agc_auto_low_pct") {
+              agc_auto_low_pct_ = param.as_double();
+            } else if (param.get_name() == "agc_auto_high_pct") {
+              agc_auto_high_pct_ = param.as_double();
             } else if (param.get_name() == "colormap") {
               // rclcpp calls the post-set callback after the value reached the parameter storage and ignores
               // its result, so the rejection is reported here and the previous palette is put back below.
@@ -357,21 +362,21 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
           if (!rejected.empty()) {
             result.successful = false;
             result.reason = rejected;
-          } else if (min_temp_limit_ >= max_temp_limit_) {
+          } else if (agc_fixed_min_temp_ >= agc_fixed_max_temp_) {
             result.successful = false;
-            result.reason = "min_temp_limit has to be lower than max_temp_limit";
+            result.reason = "agc_fixed_min_temp has to be lower than agc_fixed_max_temp";
           } else if (!probeInBounds()) {
             result.successful = false;
             result.reason = "the probe point has to lie inside the published image";
           }
           if (!result.successful) {
-            point_x_ = point_x;
-            point_y_ = point_y;
-            max_temp_limit_ = max_temp_limit;
-            min_temp_limit_ = min_temp_limit;
+            temp_ptr_x_ = temp_ptr_x;
+            temp_ptr_y_ = temp_ptr_y;
+            agc_fixed_max_temp_ = agc_fixed_max_temp;
+            agc_fixed_min_temp_ = agc_fixed_min_temp;
             agc_norm_ = agc_norm;
-            agc_low_pct_ = agc_low_pct;
-            agc_high_pct_ = agc_high_pct;
+            agc_auto_low_pct_ = agc_auto_low_pct;
+            agc_auto_high_pct_ = agc_auto_high_pct;
             agc_norm_margin_ = agc_norm_margin;
             colormap_str_ = colormap;
             colormap_ = palette;
@@ -411,17 +416,17 @@ void BosonCamera::onInit() {
   pnh_.param<std::string>("camera_info_url", camera_info_url_, "");
   pnh_.param<std::string>("agc_mode", agc_mode_str_, "auto_range");
   pnh_.param<bool>("agc_norm", agc_norm_, false);
-  pnh_.param<double>("agc_low_pct", agc_low_pct_, 1.0);
-  pnh_.param<double>("agc_high_pct", agc_high_pct_, 1.0);
+  pnh_.param<double>("agc_auto_low_pct", agc_auto_low_pct_, 1.0);
+  pnh_.param<double>("agc_auto_high_pct", agc_auto_high_pct_, 1.0);
   pnh_.param<double>("agc_norm_margin", agc_norm_margin_, 20.0);
   pnh_.param<std::string>("heatmap_mode", heatmap_mode_str_, "none");
   pnh_.param<std::string>("overlay_mode", overlay_mode_str_, "min_max_ptr");
   pnh_.param<std::string>("colormap", colormap_str_, "jet");
   pnh_.param<std::string>("temp_mode", temp_mode_str_, "none");
-  pnh_.param<int>("point_x", point_x_, 319);
-  pnh_.param<int>("point_y", point_y_, 255);
-  pnh_.param<int>("max_temp_limit", max_temp_limit_, 50);
-  pnh_.param<int>("min_temp_limit", min_temp_limit_, 20);
+  pnh_.param<int>("temp_ptr_x", temp_ptr_x_, 319);
+  pnh_.param<int>("temp_ptr_y", temp_ptr_y_, 255);
+  pnh_.param<int>("agc_fixed_max_temp", agc_fixed_max_temp_, 50);
+  pnh_.param<int>("agc_fixed_min_temp", agc_fixed_min_temp_, 20);
   pnh_.param<std::string>("radiometric", radiometric_str_, "auto");
   pnh_.param<std::vector<std::string>>(
     "radiometric_patterns", radiometric_patterns_, std::vector<std::string>({"[Rr]adiometric"}));
@@ -448,25 +453,27 @@ void BosonCamera::reconfigureCallback(flir_boson_usb::BosonCameraConfig& config,
     std::lock_guard<std::mutex> lock(mutex_);
     // dynamic_reconfigure has no way of expressing a relation between two fields, so an invalid request
     // is corrected here instead of being rejected.
-    if (config.min_temp_limit >= config.max_temp_limit) {
+    if (config.agc_fixed_min_temp >= config.agc_fixed_max_temp) {
       CRAS_WARN(
-        "min_temp_limit (%d) has to be lower than max_temp_limit (%d), keeping the previous limits.",
-        config.min_temp_limit, config.max_temp_limit);
-      config.min_temp_limit = min_temp_limit_;
-      config.max_temp_limit = max_temp_limit_;
+        "agc_fixed_min_temp (%d) has to be lower than agc_fixed_max_temp (%d), keeping the previous limits.",
+        config.agc_fixed_min_temp, config.agc_fixed_max_temp);
+      config.agc_fixed_min_temp = agc_fixed_min_temp_;
+      config.agc_fixed_max_temp = agc_fixed_max_temp_;
     }
     const auto size = publishedSize();
-    if (config.point_x < 0 || config.point_x >= size.width || config.point_y < 0 || config.point_y >= size.height) {
+    if (config.temp_ptr_x < 0 || config.temp_ptr_x >= size.width || config.temp_ptr_y < 0 ||
+        config.temp_ptr_y >= size.height)
+    {
       CRAS_WARN(
         "The probe point (%d, %d) is outside the published image (%dx%d), keeping the previous probe.",
-        config.point_x, config.point_y, size.width, size.height);
-      config.point_x = point_x_;
-      config.point_y = point_y_;
+        config.temp_ptr_x, config.temp_ptr_y, size.width, size.height);
+      config.temp_ptr_x = temp_ptr_x_;
+      config.temp_ptr_y = temp_ptr_y_;
     }
-    point_x_ = config.point_x;
-    point_y_ = config.point_y;
-    max_temp_limit_ = config.max_temp_limit;
-    min_temp_limit_ = config.min_temp_limit;
+    temp_ptr_x_ = config.temp_ptr_x;
+    temp_ptr_y_ = config.temp_ptr_y;
+    agc_fixed_max_temp_ = config.agc_fixed_max_temp;
+    agc_fixed_min_temp_ = config.agc_fixed_min_temp;
     agc_norm_ = config.agc_norm;
     agc_norm_margin_ = config.agc_norm_margin;
     // An unknown palette would silently keep the previous one, so put it back into the config to let the
@@ -481,8 +488,8 @@ void BosonCamera::reconfigureCallback(flir_boson_usb::BosonCameraConfig& config,
         "Unknown overlay_mode '%s', keeping '%s'.", config.overlay_mode.c_str(), overlay_mode_str_.c_str());
       config.overlay_mode = overlay_mode_str_;
     }
-    agc_low_pct_ = config.agc_low_pct;
-    agc_high_pct_ = config.agc_high_pct;
+    agc_auto_low_pct_ = config.agc_auto_low_pct;
+    agc_auto_high_pct_ = config.agc_auto_high_pct;
   }
   applyPipelineConfig();
 }
@@ -555,11 +562,12 @@ bool BosonCamera::validateParams() {
     [](const double p) {
       return std::isfinite(p) && p >= 0.0 && p < 50.0;
     };
-  if (!clip_valid(agc_low_pct_) || !clip_valid(agc_high_pct_)) {
+  if (!clip_valid(agc_auto_low_pct_) || !clip_valid(agc_auto_high_pct_)) {
     CRAS_WARN(
-      "Invalid AGC clip percentages (%.2f / %.2f). Reverting to 1.0 / 1.0.", agc_low_pct_, agc_high_pct_);
-    agc_low_pct_ = 1.0;
-    agc_high_pct_ = 1.0;
+      "Invalid AGC clip percentages (%.2f / %.2f). Reverting to 1.0 / 1.0.", agc_auto_low_pct_,
+      agc_auto_high_pct_);
+    agc_auto_low_pct_ = 1.0;
+    agc_auto_high_pct_ = 1.0;
   }
 
   if (agc_mode_str_ == "none") {
@@ -601,16 +609,17 @@ bool BosonCamera::validateParams() {
     return false;
   }
 
-  if (min_temp_limit_ >= max_temp_limit_) {
+  if (agc_fixed_min_temp_ >= agc_fixed_max_temp_) {
     CRAS_ERROR(
-      "min_temp_limit (%d) has to be lower than max_temp_limit (%d).", min_temp_limit_, max_temp_limit_);
+      "agc_fixed_min_temp (%d) has to be lower than agc_fixed_max_temp (%d).", agc_fixed_min_temp_,
+      agc_fixed_max_temp_);
     return false;
   }
 
   if (!probeInBounds()) {
     const auto size = publishedSize();
     CRAS_ERROR(
-      "The probe point (%d, %d) is outside the published image (%dx%d).", point_x_, point_y_, size.width,
+      "The probe point (%d, %d) is outside the published image (%dx%d).", temp_ptr_x_, temp_ptr_y_, size.width,
       size.height);
     return false;
   }
@@ -640,7 +649,7 @@ cv::Size BosonCamera::publishedSize() const {
 
 bool BosonCamera::probeInBounds() const {
   const auto size = publishedSize();
-  return point_x_ >= 0 && point_x_ < size.width && point_y_ >= 0 && point_y_ < size.height;
+  return temp_ptr_x_ >= 0 && temp_ptr_x_ < size.width && temp_ptr_y_ >= 0 && temp_ptr_y_ < size.height;
 }
 
 PipelineConfig BosonCamera::pipelineConfig() const {
@@ -653,13 +662,13 @@ PipelineConfig BosonCamera::pipelineConfig() const {
   config.colormap = colormap_;
   config.temp_mode = temp_mode_;
   config.radiometric = radiometric_;
-  config.agc_low_pct = agc_low_pct_;
-  config.agc_high_pct = agc_high_pct_;
-  config.min_limit_degC = min_temp_limit_;
-  config.max_limit_degC = max_temp_limit_;
+  config.agc_auto_low_pct = agc_auto_low_pct_;
+  config.agc_auto_high_pct = agc_auto_high_pct_;
+  config.agc_fixed_min_degC = agc_fixed_min_temp_;
+  config.agc_fixed_max_degC = agc_fixed_max_temp_;
   config.agc_norm_margin = agc_norm_margin_;
-  config.probe_x = point_x_;
-  config.probe_y = point_y_;
+  config.probe_x = temp_ptr_x_;
+  config.probe_y = temp_ptr_y_;
   config.size = publishedSize();
   return config;
 }

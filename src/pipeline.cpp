@@ -475,14 +475,14 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
 
   AgcBounds bounds;
   if (want_visual && config_.agc_mode == AgcMode::FixedRange) {
-    bounds.min_counts = degCToCounts(std::min(config_.min_limit_degC, config_.max_limit_degC));
-    bounds.max_counts = degCToCounts(std::max(config_.min_limit_degC, config_.max_limit_degC));
+    bounds.min_counts = degCToCounts(std::min(config_.agc_fixed_min_degC, config_.agc_fixed_max_degC));
+    bounds.max_counts = degCToCounts(std::max(config_.agc_fixed_min_degC, config_.agc_fixed_max_degC));
   } else {
     // Either the percentiles drive the stretch, or there is no stretch at all and the reported
     // readings are the only consumer of the scene extremes.
     buildHistogram(raw16, hist_);
     bounds = percentileBounds(
-      hist_, static_cast<double>(raw16.rows) * raw16.cols, config_.agc_low_pct, config_.agc_high_pct);
+      hist_, static_cast<double>(raw16.rows) * raw16.cols, config_.agc_auto_low_pct, config_.agc_auto_high_pct);
   }
 
   if (want_visual && config_.agc_norm) {

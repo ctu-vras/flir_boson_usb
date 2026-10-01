@@ -126,12 +126,12 @@ struct PipelineConfig {
   bool radiometric = false;
 
   //! \brief Percentiles clipped from the bottom/top of the frame; honoured by AgcMode::AutoRange only.
-  double agc_low_pct = 1.0;
-  double agc_high_pct = 1.0;
+  double agc_auto_low_pct = 1.0;
+  double agc_auto_high_pct = 1.0;
 
   //! \brief Stretch bounds in degrees Celsius; honoured by AgcMode::FixedRange only.
-  double min_limit_degC = 20.0;
-  double max_limit_degC = 50.0;
+  double agc_fixed_min_degC = 20.0;
+  double agc_fixed_max_degC = 50.0;
 
   /**
    * \brief How much wider the observed bounds are taken when renormalising, in grey levels of the

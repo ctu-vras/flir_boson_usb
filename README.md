@@ -84,52 +84,52 @@ The driver supports two `video_mode` values, each producing a different output s
 
 ### Launch arguments and node parameters
 
-The provided launch files expose all driver parameters as launch args. So most of these arguments also right away describe the node parameters.
+The provided launch files expose all driver parameters as launch args. So most of these arguments also right away describe the node parameters. The checked `Dynamic` column marks the parameters that can be changed while the node is running; see [Dynamically reconfigurable parameters](#dynamically-reconfigurable-parameters).
 
-| Argument | Description | Default |
-| :--- | :--- | :--- |
-| `namespace` | ROS namespace for the camera node. | `flir_boson` |
-| `frame_id` | Frame used in `header.frame_id`. | `boson_camera` |
-| `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` |
-| `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. Also used as camera name if it does not have a serial number. | `Boson_640` |
-| `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` |
-| `video_mode` | Camera image format. `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no camera processing).| `YUV` |
-| `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only available on `Boson320` cameras. | `False` |
-| `yuv_color` | In `YUV` mode, publishes `image_raw` as `bgr8` instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. | `False` |
-| `agc_mode` | Content of `image_visual`. `none`: the topic is not created at all. `fixed_range`: stretch the `min_temp_limit`/`max_temp_limit` interval. `auto_range`: stretch the percentiles of the current frame given by `agc_low_pct`/`agc_high_pct`. | `auto_range` |
-| `agc_low_pct` (dynamic param) | Bottom-tail clip percentage of the frame AGC (e.g. `1.0` discards the darkest 1% of pixels before linear stretch). Only honoured in `agc_mode:=auto_range`. Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
-| `agc_high_pct` (dynamic param) | Top-tail clip percentage of the frame AGC (e.g. `1.0` discards the brightest 1% of pixels before linear stretch). Only honoured in `agc_mode:=auto_range`. Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` |
-| `agc_norm` (dynamic param) | Renormalise `image_visual` to the bounds observed on the current frame, on top of whichever `agc_mode` produced them. | `False` |
-| `agc_norm_margin` (dynamic param) | How much wider the observed bounds are taken when `agc_norm` is on. Non-zero values mean the given number of lowest and highest grey levels of the active stretch are not used in the linear stretch. | `20.0` |
-| `heatmap_mode` | Content of `image_heatmap`. `none`: the topic is not created at all. `visual`: colourise `image_visual`. Requires an `agc_mode` other than `none`. | `none` |
-| `overlay_mode` (dynamic param) | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe reading text and the probe marker. `min_max`: the minimum and maximum text only. `ptr`: the probe text and marker only. Printed in the unit of `temp_mode`. See [The heatmap overlay](#the-heatmap-overlay). | `min_max_ptr` |
-| `colormap` (dynamic param) | Palette `image_heatmap` is painted with. `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`, `spring`, `cool`, `hsv`, `pink` and `hot` are always available; `parula` needs OpenCV 4.0 or newer, `magma`, `inferno`, `plasma`, `viridis` and `cividis` need 4.4, and `twilight`, `twilight_shifted`, `turbo` and `deepgreen` need 4.5. Case is ignored. A palette the built OpenCV does not have is not offered, and an unknown value keeps the palette used so far (at startup it stops the node). | `jet` |
-| `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit as `32FC1`. `centi_c`, `centi_k`, `centi_f`: the same three units in hundredths, as `16SC1`, `16UC1` and `16SC1`. Only offered for radiometric cameras; see [Temperature units](#temperature-units). | `none` |
-| `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: match the device identification against `radiometric_patterns`. `true`/`false`: override the detection. | `auto` |
-| `radiometric_patterns` | Regular expressions tested against the device identification when `radiometric` is `auto`. An invalid pattern is reported and skipped. | `["[Rr]adiometric"]` |
-| `camera_info_url` | Camera calibration file URL (`file://` or `package://`). Empty publishes uncalibrated `CameraInfo`. See [Calibration](#calibration) below. | `""` |
-| `point_x` (dynamic param)| X coord of the temperature probe point. It has to lie inside the published image. | `319` |
-| `point_y` (dynamic param) | Y coord of the temperature probe point. It has to lie inside the published image. | `255` |
-| `max_temp_limit` (dynamic param) | Upper bound of the `fixed_range` stretch, in degrees Celsius. Has to be greater than `min_temp_limit`. | `50` |
-| `min_temp_limit` (dynamic param) | Lower bound of the `fixed_range` stretch, in degrees Celsius. Has to be lower than `max_temp_limit`. | `20` |
+| Argument | Description | Default | Dynamic |
+| :--- | :--- | :--- | :---: |
+| `namespace` | ROS namespace for the camera node. | `flir_boson` | |
+| `frame_id` | Frame used in `header.frame_id`. | `boson_camera` | |
+| `camera_info_url` | Camera calibration file URL (`file://` or `package://`). Empty publishes uncalibrated `CameraInfo`. See [Calibration](#calibration) below. | `""` | |
+| `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` | |
+| `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. Also used as camera name if it does not have a serial number. | `Boson_640` | |
+| `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` | |
+| `video_mode` | Camera image format. `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no camera processing).| `YUV` | |
+| `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only available on `Boson320` cameras. | `False` | |
+| `yuv_color` | In `YUV` mode, publishes `image_raw` as `bgr8` instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. | `False` | |
+| `agc_mode` | Content of `image_visual`. `none`: the topic is not created at all. `fixed_range`: stretch the `agc_fixed_min_temp`/`agc_fixed_max_temp` interval. `auto_range`: stretch the percentiles of the current frame given by `agc_auto_low_pct`/`agc_auto_high_pct`. | `auto_range` | |
+| `agc_auto_low_pct` | Bottom-tail clip percentage of the `auto_range` AGC (e.g. `1.0` discards the darkest 1% of pixels before linear stretch). Only honoured in `agc_mode:=auto_range`. Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` | ✔ |
+| `agc_auto_high_pct` | Top-tail clip percentage of the `auto_range` AGC (e.g. `1.0` discards the brightest 1% of pixels before linear stretch). Only honoured in `agc_mode:=auto_range`. Valid range `[0, 50)`; invalid values revert to `1.0`. | `1.0` | ✔ |
+| `agc_fixed_min_temp` | Lower bound of the `fixed_range` stretch, in degrees Celsius. Has to be lower than `agc_fixed_max_temp`. | `20` | ✔ |
+| `agc_fixed_max_temp` | Upper bound of the `fixed_range` stretch, in degrees Celsius. Has to be greater than `agc_fixed_min_temp`. | `50` | ✔ |
+| `agc_norm` | Renormalise `image_visual` to the bounds observed on the current frame, on top of whichever `agc_mode` produced them. | `False` | ✔ |
+| `agc_norm_margin` | How much wider the observed bounds are taken when `agc_norm` is on. Non-zero values mean the given number of lowest and highest grey levels of the active stretch are not used in the linear stretch. | `20.0` | ✔ |
+| `heatmap_mode` | Content of `image_heatmap`. `none`: the topic is not created at all. `visual`: colourise `image_visual`. Requires an `agc_mode` other than `none`. | `none` | |
+| `overlay_mode` | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe reading text and the probe marker. `min_max`: the minimum and maximum text only. `ptr`: the probe text and marker only. Printed in the unit of `temp_mode`. See [The heatmap overlay](#the-heatmap-overlay). | `min_max_ptr` | ✔ |
+| `temp_ptr_x` | X coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `319` | ✔ |
+| `temp_ptr_y` | Y coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `255` | ✔ |
+| `colormap` | Palette `image_heatmap` is painted with. `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`, `spring`, `cool`, `hsv`, `pink` and `hot` are always available; `parula` needs OpenCV 4.0 or newer, `magma`, `inferno`, `plasma`, `viridis` and `cividis` need 4.4, and `twilight`, `twilight_shifted`, `turbo` and `deepgreen` need 4.5. Case is ignored. A palette the built OpenCV does not have is not offered, and an unknown value keeps the palette used so far (at startup it stops the node). | `jet` | ✔ |
+| `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit as `32FC1`. `centi_c`, `centi_k`, `centi_f`: the same three units in hundredths, as `16SC1`, `16UC1` and `16SC1`. Only offered for radiometric cameras; see [Temperature units](#temperature-units). | `none` | |
+| `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: match the device identification against `radiometric_patterns`. `true`/`false`: override the detection. | `auto` | |
+| `radiometric_patterns` | Regular expressions tested against the device identification when `radiometric` is `auto`. An invalid pattern is reported and skipped. | `["[Rr]adiometric"]` | |
 
 Invalid combinations are rejected rather than silently corrected: an unknown `agc_mode`, `heatmap_mode`, `overlay_mode`,
-`temp_mode`, `colormap` or `radiometric` value stops the node at startup, and a `point_x`/`point_y`/temperature-limit
+`temp_mode`, `colormap` or `radiometric` value stops the node at startup, and a `temp_ptr_x`/`temp_ptr_y`/temperature-limit
 change that would produce an invalid combination is refused by the parameter callback, which keeps the previous values.
 A `colormap` or `overlay_mode` change to a name that is not offered is reported in the node log, and the heatmap
 keeps painting with the palette and the stamped content it used so far.
 
 ### Tuning the AGC
 
-The stretch that turns 16-bit counts into the `image_visual` grey levels is controlled by `agc_mode`:
+The stretch that turns 16-bit counts into the `image_visual` grey levels is controlled by `agc_mode`. The parameters of each of the two stretches carry its name: `agc_auto_*` belong to `auto_range`, `agc_fixed_*` to `fixed_range`, and `agc_norm`/`agc_norm_margin` apply to whichever of them produced the bounds.
 
 - `auto_range` (default) stretches the percentiles of the current frame. Defaults of `1.0 / 1.0` (discard 1% from each tail) work well for most scenes. Adjust if:
-  - The scene contains a small but very hot object (lamp, exhaust, sun) that's compressing the rest of the image — *raise* `agc_high_pct` (try `2.0` or `5.0`).
+  - The scene contains a small but very hot object (lamp, exhaust, sun) that's compressing the rest of the image — *raise* `agc_auto_high_pct` (try `2.0` or `5.0`).
   - The image looks washed-out or low-contrast — *lower* both percentages toward `0.5`.
   - A few dead/stuck pixels are dominating the range — keep low percentages, even `0.1` is usually enough to discard isolated outliers thanks to the histogram-based clipping.
 
   Setting both to `0.0` is equivalent to a pure min/max stretch.
-- `fixed_range` stretches the `min_temp_limit`/`max_temp_limit` interval instead, which keeps the grey levels of a given temperature stable between frames.
+- `fixed_range` stretches the `agc_fixed_min_temp`/`agc_fixed_max_temp` interval instead, which keeps the grey levels of a given temperature stable between frames.
 - `none` does not produce `image_visual` at all (and therefore no `image_heatmap` either).
 
 `agc_norm` is a second stage on top of whichever `agc_mode` produced the bounds: it re-stretches the result to the bounds observed on the current frame, widened by `agc_norm_margin`.
@@ -161,7 +161,7 @@ encoding it carries, and both are fixed when the publishers are created.
 ### The heatmap overlay
 
 `overlay_mode` chooses what is stamped on `image_heatmap`. `Max` and `Min` are the bounds of the stretch the visible
-pixels were made from, `Ptr` is the reading at `point_x`/`point_y`, and the probe marker sits at the same point:
+pixels were made from, `Ptr` is the reading at `temp_ptr_x`/`temp_ptr_y`, and the probe marker sits at the same point:
 
 | `overlay_mode` | stamped |
 | :--- | :--- |
@@ -171,7 +171,7 @@ pixels were made from, `Ptr` is the reading at `point_x`/`point_y`, and the prob
 | `ptr` | the `Ptr` text and the probe marker |
 
 The bounds describe the picture and are stamped whatever the probe point is; the probe text and its marker need a
-probe inside the published image and are left out when `point_x`/`point_y` is outside of it.
+probe inside the published image and are left out when `temp_ptr_x`/`temp_ptr_y` is outside of it.
 
 Every reading that is stamped is printed in the unit of `temp_mode`, with the unit written next to the number:
 
@@ -188,17 +188,18 @@ that does not fit into it.
 
 ### Dynamically reconfigurable parameters
 
-`point_x`, `point_y`, `max_temp_limit`, `min_temp_limit`, `agc_norm`, `agc_norm_margin`, `agc_low_pct`, `agc_high_pct`,
-`colormap` and `overlay_mode` are dynamic parameters that can be tuned while the node is running:
+`temp_ptr_x`, `temp_ptr_y`, `agc_fixed_max_temp`, `agc_fixed_min_temp`, `agc_norm`, `agc_norm_margin`,
+`agc_auto_low_pct`, `agc_auto_high_pct`, `colormap` and `overlay_mode` are dynamic parameters that can be tuned
+while the node is running:
 
 ```bash
 # ROS 2
-ros2 param set /flir_boson/flir_boson_usb_node point_x 320
+ros2 param set /flir_boson/flir_boson_usb_node temp_ptr_x 320
 ros2 param set /flir_boson/flir_boson_usb_node colormap turbo
 ros2 param set /flir_boson/flir_boson_usb_node overlay_mode none
 
 # ROS 1 (dynamic_reconfigure)
-rosrun rqt_reconfigure dynparam set /flir_boson/flir_boson_usb_node point_x 320
+rosrun rqt_reconfigure dynparam set /flir_boson/flir_boson_usb_node temp_ptr_x 320
 ```
 
 ## Published topics
@@ -220,7 +221,7 @@ the current parameter preset disables. The condition under which each of the der
 
 - **`/<namespace>/image_temp`** (`sensor_msgs/msg/Image`) — The absolute temperature of every pixel, in the unit and the encoding given by `temp_mode` (`32FC1` for `c`/`k`/`f`, `16SC1` or `16UC1` for the `centi_` units). Exists when the camera is radiometric (`radiometric`) and `temp_mode` is not `none`. See [Temperature units](#temperature-units).
 
-- **`/<namespace>/min_temp`**, **`/<namespace>/max_temp`**, **`/<namespace>/ptr_temp`** (`flir_boson_usb/msg/Temperature`, degrees Celsius) — The bounds of the stretch the visible pixels were made from, and the temperature at `point_x`/`point_y`. They exist exactly when `image_temp` exists.
+- **`/<namespace>/min_temp`**, **`/<namespace>/max_temp`**, **`/<namespace>/ptr_temp`** (`flir_boson_usb/msg/Temperature`, degrees Celsius) — The bounds of the stretch the visible pixels were made from, and the temperature at `temp_ptr_x`/`temp_ptr_y`. They exist exactly when `image_temp` exists.
 
 All image topics are advertised with `rclcpp::SensorDataQoS` (best-effort). `image_transport` additionally exposes `image_raw/compressed`, `image_raw/compressedDepth`, and `image_raw/theora` topics if the corresponding plugins are installed.
 
@@ -258,7 +259,7 @@ To implement custom radiometric filters, lookup tables, or neural network infere
 
 - **A topic you expect is missing from `ros2 topic list`.** The parameter that enables it is off — `image_visual` needs `video_mode:=RAW16` and an `agc_mode` other than `none`, `image_heatmap` additionally needs `heatmap_mode:=visual`, and `image_temp` with the three temperature topics needs a radiometric camera and a `temp_mode` other than `none`. This is intentional; see [Published topics](#published-topics).
 
-- **AGC output looks washed out or saturated.** Tune `agc_low_pct` and `agc_high_pct`, or switch to `agc_mode:=fixed_range` — see [Tuning the AGC](#tuning-the-agc).
+- **AGC output looks washed out or saturated.** Tune `agc_auto_low_pct` and `agc_auto_high_pct`, or switch to `agc_mode:=fixed_range` — see [Tuning the AGC](#tuning-the-agc).
 
 ## Credits & lineage
 
