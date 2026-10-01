@@ -22,20 +22,45 @@
  */
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <iomanip>
+#include <memory>
+#include <mutex>
+#include <poll.h>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <vector>
+
+#include <linux/videodev2.h>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <flir_boson_usb/BosonCamera.hpp>
 
 #ifdef ROS2
-#include "rclcpp_components/register_node_macro.hpp"
+#include <cv_bridge/cv_bridge.hpp>
+#include <image_transport/image_transport.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #else
+#include <cv_bridge/cv_bridge.h>
+#include <dynamic_reconfigure/server.h>
+#include <flir_boson_usb/BosonCameraConfig.h>
+#include <image_transport/image_transport.h>
 #include <pluginlib/class_list_macros.hpp>
 #endif
 
+// To ease logging messages in ROS 1 and ROS 2, these defines work in ROS 2. ROS 1 is handled by the provided CRAS_*.
 #ifdef ROS2
 #define CRAS_INFO(...) RCLCPP_INFO(this->get_logger(), __VA_ARGS__);
 #define CRAS_WARN(...) RCLCPP_WARN(this->get_logger(), __VA_ARGS__);
@@ -549,7 +574,7 @@ bool BosonCamera::openCamera() {
     }
 
     buffers_[i].length = bufferinfo.length;
-    buffers_[i].start = mmap(NULL, bufferinfo.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, bufferinfo.m.offset);
+    buffers_[i].start = mmap(nullptr, bufferinfo.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, bufferinfo.m.offset);
 
     if (buffers_[i].start == MAP_FAILED) {
       return false;

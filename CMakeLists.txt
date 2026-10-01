@@ -11,10 +11,6 @@ find_package(catkin QUIET)
 
 if(catkin_FOUND)
   # ROS 1
-
-  if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic)
-  endif()
   set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -78,10 +74,6 @@ if(catkin_FOUND)
 
 elseif(ament_cmake_FOUND)
   # ROS 2
-
-  if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic)
-  endif()
   set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -96,8 +88,7 @@ elseif(ament_cmake_FOUND)
   include_directories(include)
 
   add_library(boson_camera_component SHARED src/BosonCamera.cpp)
-  target_compile_definitions(boson_camera_component PRIVATE "BOSON_CAMERA_BUILDING_DLL" "ROS2")
-
+  target_compile_definitions(boson_camera_component PRIVATE "ROS2")
   target_link_libraries(boson_camera_component PUBLIC
     camera_info_manager::camera_info_manager
     cras_cpp_common::cras_image_transport
@@ -107,14 +98,13 @@ elseif(ament_cmake_FOUND)
     rclcpp_components::component
     ${sensor_msgs_TARGETS}
   )
-
   rclcpp_components_register_node(
     boson_camera_component PLUGIN "flir_boson_usb::BosonCamera" EXECUTABLE boson_camera_node)
 
-  install(TARGETS boson_camera_component boson_camera_node
+  install(TARGETS boson_camera_component
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
-    RUNTIME DESTINATION lib/${PROJECT_NAME}
+    RUNTIME DESTINATION bin
   )
 
   install(DIRECTORY launch
@@ -126,15 +116,6 @@ elseif(ament_cmake_FOUND)
     DESTINATION share/${PROJECT_NAME}
   )
 
-  ament_export_dependencies(
-    camera_info_manager
-    cras_cpp_common
-    cv_bridge
-    image_transport
-    rclcpp
-    rclcpp_components
-    sensor_msgs
-  )
   ament_package()
 
 else()

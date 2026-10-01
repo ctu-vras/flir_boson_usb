@@ -23,27 +23,22 @@
 
 #pragma once
 
-#include <string>
-#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
-#include <poll.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
+
 #include <linux/videodev2.h>
-#include <sys/mman.h>
-#include <opencv2/opencv.hpp>
+#include <opencv2/core/core.hpp>
 
 #ifdef ROS2
 
 #include <camera_info_manager/camera_info_manager.hpp>
-#include <cv_bridge/cv_bridge.hpp>
 #include <image_transport/image_transport.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
-#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/temperature.hpp>
 #include <std_msgs/msg/header.hpp>
 
@@ -51,14 +46,11 @@
 
 #include <camera_info_manager/camera_info_manager.h>
 #include <cras_cpp_common/nodelet_utils.hpp>
-#include <cv_bridge/cv_bridge.h>
 #include <dynamic_reconfigure/server.h>
 #include <flir_boson_usb/BosonCameraConfig.h>
 #include <image_transport/image_transport.h>
-#include <nodelet/nodelet.h>
 #include <ros/ros.h>
 #include <sensor_msgs/CameraInfo.h>
-#include <sensor_msgs/Image.h>
 #include <sensor_msgs/Temperature.h>
 #include <std_msgs/Header.h>
 
@@ -109,10 +101,10 @@ private:
   bool closeCamera();
   void captureAndPublish();
 
-  // Custom processing utilities
+  // Custom processing utilitiesC
   void agc(
-    const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
-    double* max_temp, double* min_temp);
+      const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
+      double* max_temp, double* min_temp);
 
 #ifdef ROS2
   rclcpp::TimerBase::SharedPtr init_timer_;
@@ -148,8 +140,8 @@ private:
   v4l2_capability cap_;
 
   struct V4L2Buffer {
-      void* start;
-      size_t length;
+    void* start;
+    size_t length;
   };
   std::vector<V4L2Buffer> buffers_;  // 4-buffer Ring Queue
   int expected_height_;
