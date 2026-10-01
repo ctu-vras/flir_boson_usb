@@ -51,7 +51,7 @@ enum class HeatmapMode {
 //! \brief What is stamped on top of the colourised image.
 enum class OverlayMode {
   None = 0,
-  MinMaxPtr = 1,  //!< Minimum, maximum and probe temperature text plus the probe marker.
+  MinMaxPtr = 1,  //!< Minimum, maximum and probe reading text plus the probe marker.
 };
 
 /**
@@ -199,8 +199,33 @@ AgcBounds renormalize(const cv::Mat& raw16, const AgcBounds& base, double margin
  */
 void stretchTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds);
 
-//! \brief Stamp the minimum, maximum and probe temperature text and the probe marker onto a colour image.
-void drawOverlay(cv::Mat& image, double min_degC, double max_degC, double probe_degC, cv::Point probe);
+/**
+ * \brief Format a single reading stamped by the overlay.
+ *
+ * A radiometric camera carries absolute temperatures, so the reading is converted to the unit of \p mode
+ * exactly the way the temperature image converts it (including the rounding and saturation of the 16-bit
+ * units) and printed with the unit that goes with it: `20.00 deg C` for TempMode::DegC, or the integer
+ * `2000 cdeg C` for TempMode::CentiDegC. When the counts cannot be turned into absolute temperatures -- a
+ * non-radiometric camera, or a temperature mode with no unit at all -- the raw counts are printed instead,
+ * e.g. `29315 counts`.
+ * \param[in] counts The reading in raw 16-bit counts.
+ * \param[in] mode The unit the reading is printed in.
+ * \param[in] radiometric Whether the counts carry absolute temperatures.
+ */
+std::string formatOverlayValue(double counts, TempMode mode, bool radiometric);
+
+/**
+ * \brief Stamp the minimum, maximum and probe reading text and the probe marker onto a colour image.
+ * \param[in,out] image The image to draw on, CV_8UC3.
+ * \param[in] min_counts The lower bound of the stretch, in raw 16-bit counts.
+ * \param[in] max_counts The upper bound of the stretch, in raw 16-bit counts.
+ * \param[in] probe_counts The reading at the probe, in raw 16-bit counts.
+ * \param[in] probe The probe position in pixels of the image.
+ * \param[in] mode The unit the readings are printed in; see formatOverlayValue().
+ * \param[in] radiometric Whether the counts carry absolute temperatures.
+ */
+void drawOverlay(cv::Mat& image, double min_counts, double max_counts, double probe_counts, cv::Point probe,
+    TempMode mode, bool radiometric);
 
 /**
  * \brief Check whether any of the candidate strings matches any of the regular expressions.
@@ -248,6 +273,17 @@ int tempDepth(TempMode mode);
  * plain string so that this module keeps containing no ROS type.
  */
 const char* tempEncoding(TempMode mode);
+
+//! \brief The overlay content names accepted by overlayModeFromString(), in the order of the OverlayMode values.
+const std::vector<std::string>& overlayModeNames();
+
+/**
+ * \brief Turn an overlay content name into an OverlayMode.
+ * \param[in] name The name in lower case, i.e. one of the names listed by overlayModeNames().
+ * \param[out] mode Set to the requested content when the name is known.
+ * \return False when the name is not a supported overlay content.
+ */
+bool overlayModeFromString(const std::string& name, OverlayMode& mode);
 
 /**
  * \brief The image processing stage of the driver.

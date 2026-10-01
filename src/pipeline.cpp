@@ -103,6 +103,7 @@ constexpr double kFahrenheitOffset = 459.67;
 struct TempUnitEntry {
   const char* name;  //!< The parameter value accepted for this unit.
   const char* encoding;  //!< The image encoding the unit is carried in.
+  const char* unit;  //!< The unit the overlay prints the values of this unit in.
   int depth;  //!< The OpenCV depth of the encoding.
   double alpha;  //!< The scale applied to the raw counts.
   double beta;  //!< The offset applied to the scaled raw counts.
@@ -116,13 +117,14 @@ struct TempUnitEntry {
  */
 const std::vector<TempUnitEntry>& tempUnitTable() {
   static const std::vector<TempUnitEntry> table = {
-    {"none", "", CV_8UC1, 1.0, 0.0},  // no temperature image at all
-    {"c", "32FC1", CV_32FC1, 1.0 / flir_boson_usb::kCountsPerDegC, -flir_boson_usb::kDegCOffset},
-    {"k", "32FC1", CV_32FC1, 1.0 / flir_boson_usb::kCountsPerDegC, 0.0},
-    {"f", "32FC1", CV_32FC1, kFahrenheitPerKelvin / flir_boson_usb::kCountsPerDegC, -kFahrenheitOffset},
-    {"centi_c", "16SC1", CV_16SC1, 1.0, -flir_boson_usb::kDegCOffset * flir_boson_usb::kCountsPerDegC},
-    {"centi_k", "16UC1", CV_16UC1, 1.0, 0.0},
-    {"centi_f", "16SC1", CV_16SC1, kFahrenheitPerKelvin, -kFahrenheitOffset * flir_boson_usb::kCountsPerDegC},
+    {"none", "", "counts", CV_8UC1, 1.0, 0.0},  // no temperature image at all
+    {"c", "32FC1", "deg C", CV_32FC1, 1.0 / flir_boson_usb::kCountsPerDegC, -flir_boson_usb::kDegCOffset},
+    {"k", "32FC1", "deg K", CV_32FC1, 1.0 / flir_boson_usb::kCountsPerDegC, 0.0},
+    {"f", "32FC1", "deg F", CV_32FC1, kFahrenheitPerKelvin / flir_boson_usb::kCountsPerDegC, -kFahrenheitOffset},
+    {"centi_c", "16SC1", "cdeg C", CV_16SC1, 1.0, -flir_boson_usb::kDegCOffset * flir_boson_usb::kCountsPerDegC},
+    {"centi_k", "16UC1", "cdeg K", CV_16UC1, 1.0, 0.0},
+    {"centi_f", "16SC1", "cdeg F", CV_16SC1, kFahrenheitPerKelvin,
+      -kFahrenheitOffset * flir_boson_usb::kCountsPerDegC},
   };
   return table;
 }
@@ -137,6 +139,44 @@ std::vector<std::string> buildTempModeNames() {
   std::vector<std::string> names;
   for (const auto& unit : tempUnitTable()) {
     names.emplace_back(unit.name);
+  }
+  return names;
+}
+
+/**
+ * \brief Convert raw counts to the unit of the given mode, the way the temperature image does it.
+ *
+ * The integer units are rounded and saturated into the range of their depth, so a converted reading is
+ * always the value the corresponding pixel of the temperature image carries. TempMode::None has no unit
+ * of its own, so the counts pass through unchanged.
+ */
+double countsToTempUnit(const double counts, const flir_boson_usb::TempMode mode) {
+  const auto& entry = tempUnit(mode);
+  const double value = counts * entry.alpha + entry.beta;
+  switch (entry.depth) {
+    case CV_16SC1:
+      return cv::saturate_cast<int16_t>(value);
+    case CV_16UC1:
+      return cv::saturate_cast<uint16_t>(value);
+    default:
+      return value;
+  }
+}
+
+/**
+ * \brief The overlay contents in the order of the OverlayMode values.
+ *
+ * The position of each name is the value of the equally positioned OverlayMode enumerator.
+ */
+const std::vector<const char*>& overlayModeTable() {
+  static const std::vector<const char*> table = {"none", "min_max_ptr"};
+  return table;
+}
+
+std::vector<std::string> buildOverlayModeNames() {
+  std::vector<std::string> names;
+  for (const auto& name : overlayModeTable()) {
+    names.emplace_back(name);
   }
   return names;
 }
@@ -197,6 +237,22 @@ int tempDepth(const TempMode mode) {
 
 const char* tempEncoding(const TempMode mode) {
   return tempUnit(mode).encoding;
+}
+
+const std::vector<std::string>& overlayModeNames() {
+  static const std::vector<std::string> names = buildOverlayModeNames();
+  return names;
+}
+
+bool overlayModeFromString(const std::string& name, OverlayMode& mode) {
+  const auto& table = overlayModeTable();
+  for (size_t i = 0; i < table.size(); ++i) {
+    if (name == table[i]) {
+      mode = static_cast<OverlayMode>(i);
+      return true;
+    }
+  }
+  return false;
 }
 
 void buildHistogram(const cv::Mat& raw16, cv::Mat& hist) {
@@ -295,19 +351,42 @@ void stretchTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds)
   raw16.convertTo(out8, CV_8UC1, scale, shift);
 }
 
-void drawOverlay(cv::Mat& image, const double min_degC, const double max_degC, const double probe_degC,
-    cv::Point probe) {
-  CV_Assert(image.type() == CV_8UC3);
+std::string formatOverlayValue(const double counts, const TempMode mode, const bool radiometric) {
+  // Without absolute temperatures there is nothing to convert to, and TempMode::None has no unit either;
+  // both cases print the raw counts of the frame.
+  const TempMode unit_mode = radiometric ? mode : TempMode::None;
+  const auto& entry = tempUnit(unit_mode);
+  const double value = countsToTempUnit(counts, unit_mode);
+
+  // The hundredths units are integers in the image, so they are printed as integers as well.
+  const bool integral = entry.depth != CV_32FC1 && entry.depth != CV_64FC1;
 
   char text[64];
-  const int font = cv::FONT_HERSHEY_SIMPLEX;
+  if (integral) {
+    std::snprintf(text, sizeof(text), "%.0f %s", value, entry.unit);
+  } else {
+    std::snprintf(text, sizeof(text), "%.2f %s", value, entry.unit);
+  }
+  return std::string(text);
+}
 
-  std::snprintf(text, sizeof(text), "Max: %.2f deg", max_degC);
-  cv::putText(image, text, cv::Point(15, 15), font, 0.4, cv::Scalar(0, 0, 0), 1);
-  std::snprintf(text, sizeof(text), "Min: %.2f deg", min_degC);
-  cv::putText(image, text, cv::Point(15, 30), font, 0.4, cv::Scalar(0, 0, 0), 1);
-  std::snprintf(text, sizeof(text), "Ptr: %.2f deg", probe_degC);
-  cv::putText(image, text, cv::Point(15, 45), font, 0.4, cv::Scalar(0, 0, 0), 1);
+void drawOverlay(cv::Mat& image, const double min_counts, const double max_counts, const double probe_counts,
+    cv::Point probe, const TempMode mode, const bool radiometric) {
+  CV_Assert(image.type() == CV_8UC3);
+
+  const int font = cv::FONT_HERSHEY_SIMPLEX;
+  const std::vector<std::string> texts = {
+    "Max: " + formatOverlayValue(max_counts, mode, radiometric),
+    "Min: " + formatOverlayValue(min_counts, mode, radiometric),
+    "Ptr: " + formatOverlayValue(probe_counts, mode, radiometric),
+  };
+  for (size_t line = 0; line < texts.size(); ++line) {
+    // The palette paints whatever colour the value under the text happens to have, so the text is drawn
+    // white on a black outline to stay readable on all of them.
+    const cv::Point origin(15, 15 + 15 * static_cast<int>(line));
+    cv::putText(image, texts[line], origin, font, 0.4, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+    cv::putText(image, texts[line], origin, font, 0.4, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+  }
 
   cv::circle(image, probe, 3, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
   cv::circle(image, probe, 2, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
@@ -411,18 +490,22 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
 
   const bool probe_ok =
     config_.probe_x >= 0 && config_.probe_x < raw16.cols && config_.probe_y >= 0 && config_.probe_y < raw16.rows;
+  double probe_counts = 0.0;
   if (want_temp || want_overlay) {
     out.probe_valid = probe_ok;
     if (probe_ok) {
-      out.probe_degC = countsToDegC(raw16.at<uint16_t>(config_.probe_y, config_.probe_x));
+      probe_counts = raw16.at<uint16_t>(config_.probe_y, config_.probe_x);
+      out.probe_degC = countsToDegC(probe_counts);
     }
   }
 
   if (want_heatmap) {
     cv::applyColorMap(visual8_, heatmap8_, cvColormap(config_.colormap));
     if (want_overlay && probe_ok) {
-      drawOverlay(
-        heatmap8_, out.min_degC, out.max_degC, out.probe_degC, cv::Point(config_.probe_x, config_.probe_y));
+      // The stamped readings are in the unit of the temperature image, or in counts when the camera
+      // cannot be turned into absolute temperatures.
+      drawOverlay(heatmap8_, bounds.min_counts, bounds.max_counts, probe_counts,
+          cv::Point(config_.probe_x, config_.probe_y), config_.temp_mode, config_.radiometric);
     }
     out.heatmap = true;
     out.heatmap8 = heatmap8_;

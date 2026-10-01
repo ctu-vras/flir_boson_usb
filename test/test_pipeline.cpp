@@ -31,10 +31,13 @@ using flir_boson_usb::colormapNames;
 using flir_boson_usb::countsToDegC;
 using flir_boson_usb::cvColormap;
 using flir_boson_usb::degCToCounts;
+using flir_boson_usb::formatOverlayValue;
 using flir_boson_usb::HeatmapMode;
 using flir_boson_usb::kCountsPerDegC;
 using flir_boson_usb::matchAnyPattern;
 using flir_boson_usb::OverlayMode;
+using flir_boson_usb::overlayModeFromString;
+using flir_boson_usb::overlayModeNames;
 using flir_boson_usb::percentileBounds;
 using flir_boson_usb::Pipeline;
 using flir_boson_usb::PipelineConfig;
@@ -83,6 +86,21 @@ cv::Mat outlierFrame() {
     frame.at<uint16_t>(kRows - 1, col) = 65000;
   }
   return frame;
+}
+
+/**
+ * \brief Stamp the overlay of one configuration onto a copy of its heatmap.
+ *
+ * The heatmap the pipeline hands out is a reference to a buffer the stage reuses, so a configuration
+ * whose stamped image has to be compared with another one has to be stamped separately.
+ */
+cv::Mat stampHeatmap(const PipelineConfig& config, const cv::Mat& frame) {
+  Pipeline pipeline;
+  pipeline.configure(config);
+  PipelineOutputs out;
+  EXPECT_TRUE(pipeline.process(frame, out));
+  EXPECT_TRUE(out.heatmap);
+  return out.heatmap8.clone();
 }
 
 //! \brief Read one pixel of a temperature image, whatever depth the configured unit is carried in.
@@ -521,6 +539,133 @@ TEST(Pipeline, OverlayIsStampedOnTheHeatmap) {
   // The probe marker is drawn where the probe is, and nowhere else.
   EXPECT_EQ(255, stamped.at<cv::Vec3b>(60, 60)[0]);
   EXPECT_EQ(0, without_overlay.heatmap8.at<cv::Vec3b>(60, 60)[0]);
+}
+
+TEST(Pipeline, OverlayModeNamesRoundTrip) {
+  // The offered list is the parameter surface: everything the node accepts is listed, nothing else.
+  const std::vector<std::string> expected{"none", "min_max_ptr"};
+  EXPECT_EQ(expected, overlayModeNames());
+
+  for (const OverlayMode mode : {OverlayMode::None, OverlayMode::MinMaxPtr}) {
+    OverlayMode parsed;
+    ASSERT_TRUE(overlayModeFromString(expected[static_cast<size_t>(mode)], parsed));
+    EXPECT_EQ(static_cast<int>(mode), static_cast<int>(parsed));
+  }
+
+  // An unknown name is refused and leaves the value alone. The node lower-cases the name before calling.
+  OverlayMode untouched = OverlayMode::MinMaxPtr;
+  EXPECT_FALSE(overlayModeFromString("min_max", untouched));
+  EXPECT_FALSE(overlayModeFromString("MIN_MAX_PTR", untouched));
+  EXPECT_FALSE(overlayModeFromString("", untouched));
+  EXPECT_EQ(static_cast<int>(OverlayMode::MinMaxPtr), static_cast<int>(untouched));
+}
+
+TEST(Pipeline, OverlayValueIsPrintedInTheConfiguredUnit) {
+  // 30000 counts is 300 K, i.e. 26.85 deg C and 80.33 deg F; the centi- units are the same values in
+  // hundredths, which is what the corresponding pixel of image_temp carries.
+  constexpr double kCounts = 30000.0;
+  struct PrintedValue {
+    TempMode mode;
+    const char* text;
+  };
+  const std::vector<PrintedValue> cases{
+    {TempMode::None, "30000 counts"},  // no unit at all, so the counts the frame really carries
+    {TempMode::DegC, "26.85 deg C"},
+    {TempMode::DegK, "300.00 deg K"},
+    {TempMode::DegF, "80.33 deg F"},
+    {TempMode::CentiDegC, "2685 cdeg C"},
+    {TempMode::CentiDegK, "30000 cdeg K"},
+    {TempMode::CentiDegF, "8033 cdeg F"},
+  };
+  for (const auto& expected : cases) {
+    EXPECT_EQ(expected.text, formatOverlayValue(kCounts, expected.mode, true)) << static_cast<int>(expected.mode);
+  }
+}
+
+TEST(Pipeline, NonRadiometricOverlayShowsTheRawCounts) {
+  // A non-radiometric camera cannot be turned into absolute temperatures, so whatever unit was
+  // configured, the overlay prints the 16-bit counts it actually has, without decimals.
+  for (const TempMode mode : {TempMode::None, TempMode::DegC, TempMode::CentiDegK}) {
+    EXPECT_EQ("30000 counts", formatOverlayValue(30000.0, mode, false)) << static_cast<int>(mode);
+  }
+  EXPECT_EQ("0 counts", formatOverlayValue(0.0, TempMode::DegC, false));
+  EXPECT_EQ("65535 counts", formatOverlayValue(65535.0, TempMode::DegF, false));
+}
+
+TEST(Pipeline, OverlayValueSaturatesLikeTheTemperatureImage) {
+  // 65535 counts is 655.35 K, which the signed hundredths units cannot carry. The printed value is the
+  // saturated value the pixel of image_temp holds, not the temperature that does not fit into it.
+  const cv::Mat frame = uniformFrame(65535);
+  struct Saturation {
+    TempMode mode;
+    const char* text;
+  };
+  const std::vector<Saturation> cases{
+    {TempMode::CentiDegC, "32767 cdeg C"},
+    {TempMode::CentiDegF, "32767 cdeg F"},
+    {TempMode::CentiDegK, "65535 cdeg K"},
+    {TempMode::DegK, "655.35 deg K"},
+  };
+
+  for (const auto& expected : cases) {
+    auto config = defaultConfig();
+    config.agc_mode = AgcMode::None;
+    config.radiometric = true;
+    config.temp_mode = expected.mode;
+    Pipeline pipeline;
+    pipeline.configure(config);
+
+    PipelineOutputs out;
+    ASSERT_TRUE(pipeline.process(frame, out));
+    ASSERT_TRUE(out.temp);
+    EXPECT_EQ(expected.text, formatOverlayValue(65535.0, expected.mode, true)) << static_cast<int>(expected.mode);
+    if (expected.mode == TempMode::CentiDegC || expected.mode == TempMode::CentiDegF) {
+      EXPECT_EQ(32767, out.tempImage.at<int16_t>(0, 0)) << static_cast<int>(expected.mode);
+    }
+  }
+}
+
+TEST(Pipeline, OverlayTextFollowsTheConfiguredUnit) {
+  const cv::Mat frame = outlierFrame();
+  auto config = defaultConfig();
+  config.agc_mode = AgcMode::AutoRange;
+  config.agc_low_pct = 0.0;
+  config.agc_high_pct = 0.0;
+  config.heatmap_mode = HeatmapMode::Visual;
+  config.overlay_mode = OverlayMode::MinMaxPtr;
+  config.probe_x = 60;
+  config.probe_y = 60;
+
+  auto unit_config = config;
+  unit_config.temp_mode = TempMode::DegC;
+  unit_config.radiometric = true;
+  const cv::Mat degc = stampHeatmap(unit_config, frame);
+  unit_config.temp_mode = TempMode::DegK;
+  const cv::Mat degk = stampHeatmap(unit_config, frame);
+  unit_config.temp_mode = TempMode::DegC;
+  unit_config.radiometric = false;
+  const cv::Mat counts = stampHeatmap(unit_config, frame);
+
+  // The unit changes the stamped text, so the three heatmaps differ from each other ...
+  EXPECT_NE(0.0, cv::sum(degc != degk)[0]);
+  EXPECT_NE(0.0, cv::sum(degc != counts)[0]);
+  EXPECT_NE(0.0, cv::sum(degk != counts)[0]);
+  // ... but only the text: the picture the readings are stamped on is the same stretch.
+  EXPECT_EQ(0.0, cv::sum(degc.rowRange(70, kRows) != degk.rowRange(70, kRows))[0]);
+  EXPECT_EQ(0.0, cv::sum(degc.rowRange(70, kRows) != counts.rowRange(70, kRows))[0]);
+
+  // A non-radiometric camera still gets the overlay, printed in counts, and turning it off changes
+  // nothing but the text.
+  config.overlay_mode = OverlayMode::None;
+  config.radiometric = false;
+  config.temp_mode = TempMode::DegC;
+  Pipeline plain;
+  plain.configure(config);
+  PipelineOutputs plain_out;
+  ASSERT_TRUE(plain.process(frame, plain_out));
+  ASSERT_TRUE(plain_out.heatmap);
+  EXPECT_NE(0.0, cv::sum(counts != plain_out.heatmap8)[0]);
+  EXPECT_EQ(0.0, cv::sum(counts.rowRange(70, kRows) != plain_out.heatmap8.rowRange(70, kRows))[0]);
 }
 
 TEST(Pipeline, ColormapNamesRoundTrip) {

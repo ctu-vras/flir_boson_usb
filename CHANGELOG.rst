@@ -29,7 +29,13 @@ Changelog for package flir_boson_usb
 ..   * ``norm_margin`` renamed to ``agc_norm_margin`` and only honoured together with the new ``agc_norm``.
 ..   * Added ``agc_mode`` (``none``/``fixed_range``/``auto_range``), ``heatmap_mode``, ``overlay_mode``, ``temp_mode`` (``none``/``c``/``k``/``f``/``centi_c``/``centi_k``/``centi_f``), ``radiometric`` and ``radiometric_patterns``.
 ..   * Added ``colormap``, which chooses the palette ``image_heatmap`` is painted with; the palette used to be hard-coded to JET. It is a dynamic parameter, so the palette can be switched while the node is running, and the palettes the built OpenCV does not have are not offered.
+..   * ``overlay_mode`` is a dynamic parameter too, so the stamped content can be switched while the node is running.
 ..   * Invalid parameter combinations are refused at parameter-set time instead of silently corrected, and the probe point is validated against the real published size (so a 640-sized probe on a Boson\_320 is rejected at startup).
+..
+.. * Heatmap overlay
+..
+..   * The stamped readings are printed in the unit of ``temp_mode`` and carry its unit (``26.85 deg C``, ``2685 cdeg C``) instead of always degrees Celsius. A non-radiometric camera, for which no absolute temperature exists, prints the raw 16-bit counts instead (``30000 counts``).
+..   * The text is drawn white on a black outline, so it stays readable whatever colour the palette picks for the pixels under it.
 ..
 .. * Launch files
 ..

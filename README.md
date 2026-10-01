@@ -102,7 +102,7 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `agc_norm` (dynamic param) | Renormalise `image_visual` to the bounds observed on the current frame, on top of whichever `agc_mode` produced them. | `False` |
 | `agc_norm_margin` (dynamic param) | How much wider the observed bounds are taken when `agc_norm` is on. Non-zero values mean the given number of lowest and highest grey levels of the active stretch are not used in the linear stretch. | `20.0` |
 | `heatmap_mode` | Content of `image_heatmap`. `none`: the topic is not created at all. `visual`: colourise `image_visual`. Requires an `agc_mode` other than `none`. | `none` |
-| `overlay_mode` | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe temperature text and the probe marker. | `min_max_ptr` |
+| `overlay_mode` (dynamic param) | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe reading text and the probe marker, printed in the unit of `temp_mode`. See [The heatmap overlay](#the-heatmap-overlay). | `min_max_ptr` |
 | `colormap` (dynamic param) | Palette `image_heatmap` is painted with. `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`, `spring`, `cool`, `hsv`, `pink` and `hot` are always available; `parula` needs OpenCV 4.0 or newer, `magma`, `inferno`, `plasma`, `viridis` and `cividis` need 4.4, and `twilight`, `twilight_shifted`, `turbo` and `deepgreen` need 4.5. Case is ignored. A palette the built OpenCV does not have is not offered, and an unknown value keeps the palette used so far (at startup it stops the node). | `jet` |
 | `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit as `32FC1`. `centi_c`, `centi_k`, `centi_f`: the same three units in hundredths, as `16SC1`, `16UC1` and `16SC1`. Only offered for radiometric cameras; see [Temperature units](#temperature-units). | `none` |
 | `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: match the device identification against `radiometric_patterns`. `true`/`false`: override the detection. | `auto` |
@@ -116,8 +116,8 @@ The provided launch files expose all driver parameters as launch args. So most o
 Invalid combinations are rejected rather than silently corrected: an unknown `agc_mode`, `heatmap_mode`, `overlay_mode`,
 `temp_mode`, `colormap` or `radiometric` value stops the node at startup, and a `point_x`/`point_y`/temperature-limit
 change that would produce an invalid combination is refused by the parameter callback, which keeps the previous values.
-A `colormap` change to a name that is not a palette is reported in the node log and the heatmap keeps painting with
-the palette it used so far.
+A `colormap` or `overlay_mode` change to a name that is not offered is reported in the node log, and the heatmap
+keeps painting with the palette and the stamped content it used so far.
 
 ### Tuning the AGC
 
@@ -158,15 +158,33 @@ one of the `32FC1` units when that can happen.
 The unit is a startup parameter, like the other presets: it decides whether `image_temp` exists at all and what
 encoding it carries, and both are fixed when the publishers are created.
 
+### The heatmap overlay
+
+`overlay_mode:=min_max_ptr` stamps three readings and the probe marker on `image_heatmap`. `Max` and `Min` are the
+bounds of the stretch the visible pixels were made from, `Ptr` is the reading at `point_x`/`point_y`, and all three
+are printed in the unit of `temp_mode`, with the unit written next to the number:
+
+| camera and `temp_mode` | stamped text |
+| :--- | :--- |
+| radiometric, `c` / `k` / `f` | `Max: 26.85 deg C` (also `deg K`, `deg F`), with two decimals |
+| radiometric, `centi_c` / `centi_k` / `centi_f` | `Max: 2685 cdeg C` — hundredths of the degree, the integers the 16-bit image carries |
+| non-radiometric camera, or `temp_mode:=none` | `Max: 30000 counts` — the raw 16-bit thermal counts of the frame |
+
+A camera without radiometry cannot be turned into absolute temperatures, so the overlay prints the counts it really
+has instead of a temperature that would be made up. In the hundredths units the printed number is the value the
+corresponding pixel of `image_temp` holds, i.e. saturated to the range of the encoding rather than the temperature
+that does not fit into it.
+
 ### Dynamically reconfigurable parameters
 
-`point_x`, `point_y`, `max_temp_limit`, `min_temp_limit`, `agc_norm`, `agc_norm_margin`, `agc_low_pct`, `agc_high_pct`
-and `colormap` are dynamic parameters that can be tuned while the node is running:
+`point_x`, `point_y`, `max_temp_limit`, `min_temp_limit`, `agc_norm`, `agc_norm_margin`, `agc_low_pct`, `agc_high_pct`,
+`colormap` and `overlay_mode` are dynamic parameters that can be tuned while the node is running:
 
 ```bash
 # ROS 2
 ros2 param set /flir_boson/flir_boson_usb_node point_x 320
 ros2 param set /flir_boson/flir_boson_usb_node colormap turbo
+ros2 param set /flir_boson/flir_boson_usb_node overlay_mode none
 
 # ROS 1 (dynamic_reconfigure)
 rosrun rqt_reconfigure dynparam set /flir_boson/flir_boson_usb_node point_x 320
@@ -187,7 +205,7 @@ the current parameter preset disables. The condition under which each of the der
 
 - **`/<namespace>/image_visual`** (`sensor_msgs/msg/Image`, `mono8`) — The contrast-mapped display image. Exists when `video_mode` is `RAW16` and `agc_mode` is not `none`.
 
-- **`/<namespace>/image_heatmap`** (`sensor_msgs/msg/Image`, `bgr8`) — `image_visual` colourised with the `colormap` palette, with the `overlay_mode` text and probe marker stamped on it. Exists when `image_visual` exists and `heatmap_mode` is not `none`.
+- **`/<namespace>/image_heatmap`** (`sensor_msgs/msg/Image`, `bgr8`) — `image_visual` colourised with the `colormap` palette, with the `overlay_mode` readings and the probe marker stamped on it. Exists when `image_visual` exists and `heatmap_mode` is not `none`. See [The heatmap overlay](#the-heatmap-overlay).
 
 - **`/<namespace>/image_temp`** (`sensor_msgs/msg/Image`) — The absolute temperature of every pixel, in the unit and the encoding given by `temp_mode` (`32FC1` for `c`/`k`/`f`, `16SC1` or `16UC1` for the `centi_` units). Exists when the camera is radiometric (`radiometric`) and `temp_mode` is not `none`. See [Temperature units](#temperature-units).
 

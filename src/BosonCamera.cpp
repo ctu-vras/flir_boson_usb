@@ -132,6 +132,11 @@ std::string tempList(const std::string& separator) {
   return valueList(tempModeNames(), separator);
 }
 
+//! \brief The contents the heatmap can be stamped with.
+std::string overlayList(const std::string& separator) {
+  return valueList(overlayModeNames(), separator);
+}
+
 }  // namespace
 
 #ifdef ROS2
@@ -176,9 +181,9 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
       is_yv12_(false), frame_rate_(0.0), video_mode_(Encoding::YUV), zoom_enable_(false), yuv_color_(false),
       sensor_type_(SensorTypes::Boson640), radiometric_request_(TriState::Auto), radiometric_(false),
-      agc_mode_(AgcMode::AutoRange), heatmap_mode_(HeatmapMode::None), overlay_mode_(OverlayMode::MinMaxPtr),
-      temp_mode_(TempMode::None), point_x_(0), point_y_(0), max_temp_limit_(50), min_temp_limit_(20),
-      agc_norm_(false), agc_low_pct_(1.0), agc_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet) {
+      agc_mode_(AgcMode::AutoRange), heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), point_x_(0),
+      point_y_(0), max_temp_limit_(50), min_temp_limit_(20), agc_norm_(false), agc_low_pct_(1.0),
+      agc_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet), overlay_mode_(OverlayMode::MinMaxPtr) {
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
     "dev", "/dev/video0", paramDesc("the linux file descriptor location for the camera"));
@@ -243,9 +248,10 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
   overlay_mode_str_ = this->declare_parameter(
     "overlay_mode", "min_max_ptr",
     paramDesc(
-      "What is stamped on image_heatmap. none: nothing. min_max_ptr: the minimum, maximum and probe temperature text "
-      "and the probe marker. Only honoured when a heatmap is published.",
-      "none|min_max_ptr"));
+      "What is stamped on image_heatmap. none: nothing. min_max_ptr: the minimum, maximum and probe reading text and "
+      "the probe marker, printed in the unit of temp_mode (in raw counts for a non-radiometric camera). Only honoured "
+      "when a heatmap is published.",
+      overlayList("|")));
   colormap_str_ = this->declare_parameter(
     "colormap", "jet",
     paramDesc(
@@ -303,6 +309,8 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
           const double agc_norm_margin = agc_norm_margin_;
           const std::string colormap = colormap_str_;
           const Colormap palette = colormap_;
+          const std::string overlay_mode = overlay_mode_str_;
+          const OverlayMode overlay = overlay_mode_;
           //! \brief The reason for the first value this call refused; empty when everything was accepted.
           std::string rejected;
           for (const auto& param : parameters) {
@@ -332,6 +340,16 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
                   rejected = "colormap has to be one of " + colormapList(", ");
                 }
               }
+            } else if (param.get_name() == "overlay_mode") {
+              // The same situation as with the palette: the rejected value is already in the parameter
+              // storage, so the previous content is put back below.
+              const std::string name = param.as_string();
+              if (!setOverlayMode(name)) {
+                CRAS_WARN("Unknown overlay_mode '%s', keeping '%s'.", name.c_str(), overlay_mode_str_.c_str());
+                if (rejected.empty()) {
+                  rejected = "overlay_mode has to be one of " + overlayList(", ");
+                }
+              }
             }
           }
           result.successful = true;
@@ -356,6 +374,8 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
             agc_norm_margin_ = agc_norm_margin;
             colormap_str_ = colormap;
             colormap_ = palette;
+            overlay_mode_str_ = overlay_mode;
+            overlay_mode_ = overlay;
           }
         }
         if (result.successful) {
@@ -454,6 +474,12 @@ void BosonCamera::reconfigureCallback(flir_boson_usb::BosonCameraConfig& config,
       CRAS_WARN("Unknown colormap '%s', keeping '%s'.", config.colormap.c_str(), colormap_str_.c_str());
       config.colormap = colormap_str_;
     }
+    // The same for the overlay: an unknown content is put back so that the GUI shows what is stamped.
+    if (!setOverlayMode(config.overlay_mode)) {
+      CRAS_WARN(
+        "Unknown overlay_mode '%s', keeping '%s'.", config.overlay_mode.c_str(), overlay_mode_str_.c_str());
+      config.overlay_mode = overlay_mode_str_;
+    }
     agc_low_pct_ = config.agc_low_pct;
     agc_high_pct_ = config.agc_high_pct;
   }
@@ -473,6 +499,16 @@ bool BosonCamera::setColormap(const std::string& name) {
   }
   colormap_str_ = name;
   colormap_ = colormap;
+  return true;
+}
+
+bool BosonCamera::setOverlayMode(const std::string& name) {
+  OverlayMode mode;
+  if (!overlayModeFromString(cras::toLower(name), mode)) {
+    return false;
+  }
+  overlay_mode_str_ = name;
+  overlay_mode_ = mode;
   return true;
 }
 
@@ -545,12 +581,10 @@ bool BosonCamera::validateParams() {
     return false;
   }
 
-  if (overlay_mode_str_ == "none") {
-    overlay_mode_ = OverlayMode::None;
-  } else if (overlay_mode_str_ == "min_max_ptr") {
-    overlay_mode_ = OverlayMode::MinMaxPtr;
-  } else {
-    CRAS_ERROR("Invalid overlay_mode value '%s', expected none or min_max_ptr.", overlay_mode_str_.c_str());
+  if (!setOverlayMode(overlay_mode_str_)) {
+    CRAS_ERROR(
+      "Invalid overlay_mode value '%s', expected one of %s.", overlay_mode_str_.c_str(),
+      overlayList(", ").c_str());
     return false;
   }
 

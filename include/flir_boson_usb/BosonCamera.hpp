@@ -116,6 +116,15 @@ private:
    */
   bool setColormap(const std::string& name);
   /**
+   * \brief Turn a name into the content stamped on the heatmap.
+   *
+   * The name is matched case-insensitively. The name and its typed form are updated together, and both are
+   * left untouched when the name is not a supported overlay content.
+   * \note The caller has to hold mutex_ when other threads can already read the parameters.
+   * \return False when the name is not a supported overlay content.
+   */
+  bool setOverlayMode(const std::string& name);
+  /**
    * \brief Turn a unit name into the unit the absolute temperature image is carried in.
    *
    * The name is matched case-insensitively. The name, its typed form and the image encoding that goes with
@@ -193,7 +202,7 @@ private:
 
   // Parameters
   std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
-  std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, overlay_mode_str_, temp_mode_str_;
+  std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, temp_mode_str_;
   std::vector<std::string> radiometric_patterns_;
   double frame_rate_;
   Encoding video_mode_;
@@ -208,7 +217,6 @@ private:
   // The typed form of the preset parameters above.
   AgcMode agc_mode_;
   HeatmapMode heatmap_mode_;
-  OverlayMode overlay_mode_;
   TempMode temp_mode_;
   //! \brief The image encoding that goes with temp_mode_; the publishers have no access to the stage.
   std::string temp_encoding_;
@@ -221,6 +229,9 @@ private:
   //! \brief The palette name and its typed form; setColormap() keeps them in sync.
   std::string colormap_str_;
   Colormap colormap_;
+  //! \brief The overlay content name and its typed form; setOverlayMode() keeps them in sync.
+  std::string overlay_mode_str_;
+  OverlayMode overlay_mode_;
   mutable std::mutex mutex_;
 };
 
