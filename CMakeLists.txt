@@ -7,6 +7,7 @@ cmake_minimum_required(VERSION 3.10.2)
 project(flir_boson_usb)
 
 find_package(ament_cmake QUIET)
+#catkin_lint: ignore_once missing_required
 find_package(catkin QUIET)
 
 if(catkin_FOUND)
@@ -30,18 +31,7 @@ if(catkin_FOUND)
     cfg/BosonCamera.cfg
   )
 
-  catkin_package(
-    CATKIN_DEPENDS
-      camera_info_manager
-      cras_cpp_common
-      cv_bridge
-      dynamic_reconfigure
-      image_transport
-      nodelet
-      pluginlib
-      roscpp
-      sensor_msgs
-  )
+  catkin_package()
 
   include_directories(
     include
@@ -51,7 +41,7 @@ if(catkin_FOUND)
   add_library(BosonCamera src/BosonCamera.cpp)
   add_dependencies(BosonCamera ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
   target_link_libraries(BosonCamera ${catkin_LIBRARIES})
-  cras_node_from_nodelet(BosonCamera flir_boson_usb::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
+  cras_node_from_nodelet(BosonCamera ${PROJECT_NAME}::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
 
   install(TARGETS BosonCamera
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -72,17 +62,45 @@ if(catkin_FOUND)
     DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   )
 
+  if(CATKIN_ENABLE_TESTING)
+    find_package(roslaunch REQUIRED)
+    find_package(roslint REQUIRED)
+    find_package(rostest REQUIRED)
+
+    roslint_custom(catkin_lint "-W2" .)
+
+    # Roslint C++ - checks formatting and some other rules for C++ files
+
+    file(GLOB_RECURSE ROSLINT_INCLUDE include/*.hpp)
+    file(GLOB_RECURSE ROSLINT_SRC src/*.cpp)
+
+    set(ROSLINT_CPP_OPTS "--extensions=h,hpp,hh,c,cpp,cc;--linelength=120;--filter=\
+    -build/header_guard,-readability/namespace,-whitespace/braces,-runtime/references,\
+    -build/c++11,-readability/nolint,-readability/todo,-legal/copyright")
+    roslint_cpp(${ROSLINT_INCLUDE} ${ROSLINT_SRC})
+
+    roslint_add_test()
+
+    roslaunch_add_file_check(launch/flir_boson.launch)
+    roslaunch_add_file_check(launch/flir_boson_320.launch)
+  endif()
+
 elseif(ament_cmake_FOUND)
   # ROS 2
   set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_EXTENSIONS OFF)
 
+  #catkin_lint: ignore_once duplicate_find
   find_package(camera_info_manager REQUIRED)
+  #catkin_lint: ignore_once duplicate_find
   find_package(cras_cpp_common REQUIRED)
+  #catkin_lint: ignore_once duplicate_find
   find_package(cv_bridge REQUIRED)
+  #catkin_lint: ignore_once duplicate_find
   find_package(image_transport REQUIRED)
   find_package(rclcpp REQUIRED)
   find_package(rclcpp_components REQUIRED)
+  #catkin_lint: ignore_once duplicate_find
   find_package(sensor_msgs REQUIRED)
 
   include_directories(include)
@@ -100,7 +118,7 @@ elseif(ament_cmake_FOUND)
     ${sensor_msgs_TARGETS}
   )
   rclcpp_components_register_node(
-    boson_camera_component PLUGIN "flir_boson_usb::BosonCamera" EXECUTABLE boson_camera_node)
+    boson_camera_component PLUGIN "${PROJECT_NAME}::BosonCamera" EXECUTABLE boson_camera_node)
 
   install(TARGETS boson_camera_component
     ARCHIVE DESTINATION lib
