@@ -205,6 +205,8 @@ private:
   std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, temp_mode_str_;
   std::vector<std::string> radiometric_patterns_;
   double frame_rate_;
+  //! \brief The depth of the publisher queues (the keep_last history depth) of every published topic.
+  int queue_size_;
   Encoding video_mode_;
   bool zoom_enable_;
   bool yuv_color_;

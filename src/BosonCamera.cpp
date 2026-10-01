@@ -179,10 +179,11 @@ inline rcl_interfaces::msg::ParameterDescriptor paramDescRangeF(
 
 BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
-      is_yv12_(false), frame_rate_(0.0), video_mode_(Encoding::YUV), zoom_enable_(false), yuv_color_(false),
-      sensor_type_(SensorTypes::Boson640), radiometric_request_(TriState::Auto), radiometric_(false),
-      agc_mode_(AgcMode::AutoRange), heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), temp_ptr_x_(0),
-      temp_ptr_y_(0), agc_fixed_max_temp_(50), agc_fixed_min_temp_(20), agc_norm_(false), agc_auto_low_pct_(1.0),
+      is_yv12_(false), frame_rate_(0.0), queue_size_(1), video_mode_(Encoding::YUV),
+      zoom_enable_(false), yuv_color_(false), sensor_type_(SensorTypes::Boson640),
+      radiometric_request_(TriState::Auto), radiometric_(false), agc_mode_(AgcMode::AutoRange),
+      heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), temp_ptr_x_(0), temp_ptr_y_(0),
+      agc_fixed_max_temp_(50), agc_fixed_min_temp_(20), agc_norm_(false), agc_auto_low_pct_(1.0),
       agc_auto_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet),
       overlay_mode_(OverlayMode::MinMaxPtr) {
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
@@ -197,6 +198,10 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
   const auto is640 = sensor_type_str_ == "Boson_640";
   frame_rate_ = this->declare_parameter(
     "frame_rate", 30.0, paramDescRangeF("Frame rate of the camera", 9.0, 60.0, 3.0, "Only 9.0/30.0/60.0 supported."));
+  queue_size_ = this->declare_parameter(
+    "queue_size", 1,
+    paramDescRangeI(
+      "Size of the publisher queues (the keep_last depth) of every topic the node publishes.", 1, 100));
   zoom_enable_ = this->declare_parameter(
     "zoom_enable", false,
     paramDesc("Digital 2x upscale (320x256 -> 640x512) of the published image. Only available on Boson320 cameras."));
@@ -400,7 +405,7 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
 
 #else
 
-BosonCamera::BosonCamera() : fd_(-1) {}
+BosonCamera::BosonCamera() : fd_(-1), queue_size_(1) {}
 
 void BosonCamera::onInit() {
   nh_ = getNodeHandle();
@@ -409,6 +414,7 @@ void BosonCamera::onInit() {
   pnh_.param<std::string>("frame_id", frame_id_, "boson_camera");
   pnh_.param<std::string>("dev", dev_path_, "/dev/video0");
   pnh_.param<double>("frame_rate", frame_rate_, 30.0);
+  pnh_.param<int>("queue_size", queue_size_, 1);
   pnh_.param<std::string>("video_mode", video_mode_str_, "YUV");
   pnh_.param<bool>("zoom_enable", zoom_enable_, false);
   pnh_.param<bool>("yuv_color", yuv_color_, false);
@@ -535,6 +541,11 @@ bool BosonCamera::validateParams() {
   if (!std::isfinite(frame_rate_) || frame_rate_ <= 0.0) {
     CRAS_WARN("Invalid frame_rate parameter (%.3f). Clamping to 1.0 Hz.", frame_rate_);
     frame_rate_ = 1.0;
+  }
+
+  if (queue_size_ < 1) {
+    CRAS_WARN("Invalid queue_size parameter (%d). Reverting to 1.", queue_size_);
+    queue_size_ = 1;
   }
 
   // The published image size is derived from the sensor type and the video mode, and the probe point is
@@ -866,35 +877,36 @@ void BosonCamera::createPublishers() {
   }
 
 #ifdef ROS2
-  const auto cam_pub_qos = rclcpp::SensorDataQoS().get_rmw_qos_profile();
-  // Set explicit Best-Effort / SensorData QoS for 60Hz camera streams
-  image_pub_ = image_transport::create_camera_publisher(this, "image_raw", cam_pub_qos);
+  const auto cam_pub_qos = rclcpp::SystemDefaultsQoS().keep_last(static_cast<size_t>(queue_size_));
+  const auto cam_pub_qos_rmw = cam_pub_qos.get_rmw_qos_profile();
+  image_pub_ = image_transport::create_camera_publisher(this, "image_raw", cam_pub_qos_rmw);
   if (visual) {
-    image_pub_visual_ = image_transport::create_publisher(this, "image_visual", cam_pub_qos);
+    image_pub_visual_ = image_transport::create_publisher(this, "image_visual", cam_pub_qos_rmw);
   }
   if (heatmap) {
-    image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos);
+    image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos_rmw);
   }
   if (temp) {
-    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos);
-    max_temp_pub_ = this->create_publisher<Temperature>("max_temp", 1);
-    min_temp_pub_ = this->create_publisher<Temperature>("min_temp", 1);
-    ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", 1);
+    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos_rmw);
+    max_temp_pub_ = this->create_publisher<Temperature>("max_temp", cam_pub_qos);
+    min_temp_pub_ = this->create_publisher<Temperature>("min_temp", cam_pub_qos);
+    ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", cam_pub_qos);
   }
 #else
+  const uint32_t queue_size = static_cast<uint32_t>(queue_size_);
   it_ = std::make_shared<image_transport::ImageTransport>(nh_);
-  image_pub_ = it_->advertiseCamera("image_raw", 1);
+  image_pub_ = it_->advertiseCamera("image_raw", queue_size);
   if (visual) {
-    image_pub_visual_ = it_->advertise("image_visual", 1);
+    image_pub_visual_ = it_->advertise("image_visual", queue_size);
   }
   if (heatmap) {
-    image_pub_heatmap_ = it_->advertise("image_heatmap", 1);
+    image_pub_heatmap_ = it_->advertise("image_heatmap", queue_size);
   }
   if (temp) {
-    image_pub_temp_ = it_->advertise("image_temp", 1);
-    max_temp_pub_ = nh_.advertise<Temperature>("max_temp", 1);
-    min_temp_pub_ = nh_.advertise<Temperature>("min_temp", 1);
-    ptr_temp_pub_ = nh_.advertise<Temperature>("ptr_temp", 1);
+    image_pub_temp_ = it_->advertise("image_temp", queue_size);
+    max_temp_pub_ = nh_.advertise<Temperature>("max_temp", queue_size);
+    min_temp_pub_ = nh_.advertise<Temperature>("min_temp", queue_size);
+    ptr_temp_pub_ = nh_.advertise<Temperature>("ptr_temp", queue_size);
   }
 #endif
 }

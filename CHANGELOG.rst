@@ -32,6 +32,7 @@ Changelog for package flir_boson_usb
 ..   * Added ``agc_mode`` (``none``/``fixed_range``/``auto_range``), ``heatmap_mode``, ``overlay_mode``, ``temp_mode`` (``none``/``c``/``k``/``f``/``centi_c``/``centi_k``/``centi_f``), ``radiometric`` and ``radiometric_patterns``.
 ..   * Added ``colormap``, which chooses the palette ``image_heatmap`` is painted with; the palette used to be hard-coded to JET. It is a dynamic parameter, so the palette can be switched while the node is running, and the palettes the built OpenCV does not have are not offered.
 ..   * ``overlay_mode`` is a dynamic parameter too, so the stamped content can be switched while the node is running.
+..   * Added ``queue_size``, the depth of the publisher queues (the ``keep_last`` history depth) of every topic the node publishes. It defaults to ``1``, which also pins the previously middleware-default depth of the image publishers to a single frame, so a subscriber that falls behind drops the stale frame instead of the driver buffering a backlog.
 ..   * Invalid parameter combinations are refused at parameter-set time instead of silently corrected, and the probe point is validated against the real published size (so a 640-sized probe on a Boson\_320 is rejected at startup).
 ..
 .. * Heatmap overlay
@@ -44,6 +45,7 @@ Changelog for package flir_boson_usb
 ..
 ..   * The ``rectify`` block rectifies ``image_raw``, ``image_visual``, ``image_heatmap`` and ``image_temp`` according to the enabled modes instead of the removed ``image8`` / ``image8_norm`` topics.
 ..   * ``temp_ptr_x`` and ``temp_ptr_y`` are now actually passed to the node.
+..   * ``queue_size`` is exposed as a launch argument next to the other node parameters.
 ..   * ``flir_boson_320.launch.xml`` includes the ROS 2 launch file that exists.
 
 2.0.0 (2026-05-28)

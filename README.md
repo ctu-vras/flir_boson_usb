@@ -80,6 +80,8 @@ The driver supports two `video_mode` values, each producing a different output s
 
 - **Hardware rate vs. driver polling.** The `frame_rate` argument controls the software polling loop via a non-blocking poll() architecture. Setting it above hardware limits (e.g., polling at 60Hz on a 9Hz camera) safely drops back to the physical rate with no CPU penalty.
 
+- **Publisher queue depth.** Every publisher advertises `queue_size` frames (the `keep_last` history depth, 1 by default). With the default, a subscriber that does not keep up simply misses the stale frame instead of the driver buffering a backlog and growing the latency; raise it when a slow consumer must not miss frames.
+
 - **Automatic telemetry handling.** If binary telemetry metadata rows are active via the FLIR GUI, the driver reads the full buffer, handles telemetry isolation, and automatically crops the published image back to nominal array sizes (640×512 or 320×256) so standard `CameraInfo` calibrations continue to function perfectly.
 
 ### Launch arguments and node parameters
@@ -94,6 +96,7 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` | |
 | `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. Also used as camera name if it does not have a serial number. | `Boson_640` | |
 | `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` | |
+| `queue_size` | Size of the publisher queues (the `keep_last` history depth) of every topic the node publishes. See [Notes on frame rate and performance](#notes-on-frame-rate-and-performance). | `1` | |
 | `video_mode` | Camera image format. `YUV`: camera-side AGC (`mono8`/`bgr8`, low CPU). `RAW16`: raw 16-bit thermal counts (`mono16`, no camera processing).| `YUV` | |
 | `zoom_enable` | Digital 2× upscale (`320×256` → `640×512`) of the published image. Only available on `Boson320` cameras. | `False` | |
 | `yuv_color` | In `YUV` mode, publishes `image_raw` as `bgr8` instead of `mono8`. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI. | `False` | |
@@ -223,7 +226,7 @@ the current parameter preset disables. The condition under which each of the der
 
 - **`/<namespace>/min_temp`**, **`/<namespace>/max_temp`**, **`/<namespace>/ptr_temp`** (`flir_boson_usb/msg/Temperature`, degrees Celsius) — The bounds of the stretch the visible pixels were made from, and the temperature at `temp_ptr_x`/`temp_ptr_y`. They exist exactly when `image_temp` exists.
 
-All image topics are advertised with `rclcpp::SensorDataQoS` (best-effort). `image_transport` additionally exposes `image_raw/compressed`, `image_raw/compressedDepth`, and `image_raw/theora` topics if the corresponding plugins are installed.
+All image topics are advertised with `rclcpp::SystemDefaultsQoS` (reliable) and a queue of `queue_size` frames. Be aware of possible problems if you subscribe via reliable subscribers and the link does not have enough bandwidth.
 
 ## Calibration
 
@@ -254,8 +257,6 @@ To implement custom radiometric filters, lookup tables, or neural network infere
 - **`Hardware mismatch! Configured for Boson_640 but V4L2 negotiated width 320`** — Wrong `sensor_type` for the physical camera. Set it to match the actual sensor.
 
 - **`Driver reports YUV bytesperline=X but width=Y`** — The driver is reporting strided YUV buffers, which this node does not currently handle. File an issue with the output of `v4l2-ctl -d <dev> --get-fmt-video` attached.
-
-- **`ros2 topic echo` or `rqt_image_view` shows nothing.** Most likely a QoS mismatch: the driver publishes best-effort, but many tools default to reliable. Either tell the subscriber to use best-effort (`ros2 topic echo /flir_boson/image_raw --qos-reliability best_effort`) or run `rqt_image_view` which negotiates QoS automatically.
 
 - **A topic you expect is missing from `ros2 topic list`.** The parameter that enables it is off — `image_visual` needs `video_mode:=RAW16` and an `agc_mode` other than `none`, `image_heatmap` additionally needs `heatmap_mode:=visual`, and `image_temp` with the three temperature topics needs a radiometric camera and a `temp_mode` other than `none`. This is intentional; see [Published topics](#published-topics).
 

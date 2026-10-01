@@ -17,6 +17,7 @@ SPDX-FileCopyrightText: Czech Technical University in Prague
   <arg name="dev" default="/dev/video0" description="the linux file descriptor location for the camera"/>
   <arg name="sensor_type" default="Boson_640" description="Physical sensor array size. Boson_320 or Boson_640. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch."/>
   <arg name="frame_rate" default="30.0" description="Frame rate of the camera. Only 9.0/30.0/60.0 supported."/>
+  <arg name="queue_size" default="1" description="Size of the publisher queues (the keep_last depth) of every topic the node publishes."/>
   <arg name="video_mode" default="YUV" description="Camera image format. YUV: camera-side AGC (mono8/bgr8, low CPU). RAW16: raw 16-bit thermal counts (mono16, no camera processing). The visual topics only exist in this mode."/>
   <arg name="zoom_enable" default="false" description="Digital 2x upscale (320x256 -> 640x512) of the published image. Only available on Boson320 cameras."/>
   <arg name="yuv_color" default="false" description="In YUV mode, publishes image_raw as bgr8 instead of mono8. Use this if a color palette (e.g., Rainbow) is enabled via the FLIR GUI."/>
@@ -52,6 +53,7 @@ SPDX-FileCopyrightText: Czech Technical University in Prague
         <param name="frame_id" type="str" value="$(var frame_id)"/>
         <param name="dev" type="str" value="$(var dev)"/>
         <param name="frame_rate" type="float" value="$(var frame_rate)"/>
+        <param name="queue_size" type="int" value="$(var queue_size)"/>
         <param name="video_mode" type="str" value="$(var video_mode)"/>
         <param name="zoom_enable" type="bool" value="$(var zoom_enable)"/>
         <param name="yuv_color" type="bool" value="$(var yuv_color)"/>
