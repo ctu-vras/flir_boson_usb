@@ -785,7 +785,14 @@ void BosonCamera::init() {
 
   try {
     BosonAPI api("/dev/ttyACM1");
-    CRAS_WARN("PN: %s, SN: %u", api.getCameraProductNumber().c_str(), api.getCameraSerialNumber());
+    const auto fw = api.getCameraFirmwareVersion();
+    CRAS_WARN(
+      "PN: %s, SN: %u, FW: %u.%u.%u",
+      api.getCameraProductNumber().c_str(), api.getCameraSerialNumber(), fw[0], fw[1], fw[2]);
+    CRAS_WARN(
+      "Radio: %s, Uptime: %u, Temp: %f, Telem: %s",
+      api.isRadiometric() ? "Y" : "N", api.getUptime(), api.getSensorTemperature(),
+      api.isTelemetryEnabled() ? "Y" : "N");
   } catch (const std::exception& e) {
     CRAS_ERROR("Failed to initialize Boson API: %s", e.what());
   }
