@@ -744,7 +744,10 @@ void BosonCamera::captureAndPublish() {
 #ifdef ROS2
       const auto stamp = Time(v4l2_timeval_to_ns(&bufferinfo.timestamp));
 #else
-      const auto stamp = Time().fromNSec(v4l2_timeval_to_ns(&bufferinfo.timestamp));
+      // Ubuntu 18.04 does not have v4l2_timeval_to_ns() so we expand it here manually
+      const uint64_t ns =
+        static_cast<uint64_t>(bufferinfo.timestamp.tv_sec) * 1000000000ULL + bufferinfo.timestamp.tv_usec * 1000;
+      const auto stamp = Time().fromNSec(ns);
 #endif
       header.stamp = stamp + diff;
     }
