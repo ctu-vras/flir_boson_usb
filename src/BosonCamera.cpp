@@ -38,6 +38,7 @@
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
 
@@ -717,12 +718,36 @@ void BosonCamera::captureAndPublish() {
   void* current_buffer = buffers_[bufferinfo.index].start;
 
   Header header;
+  header.frame_id = frame_id_;
 #ifdef ROS2
   header.stamp = this->now();
 #else
   header.stamp = ros::Time::now();
 #endif
-  header.frame_id = frame_id_;
+
+  if ((bufferinfo.flags & V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) &&
+      (bufferinfo.timestamp.tv_sec > 0 || bufferinfo.timestamp.tv_usec > 0)) {
+#ifdef ROS2
+    using rclcpp::Time;
+#else
+    using ros::Time;
+#endif
+    timespec ts {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const auto mono = Time(ts.tv_sec, ts.tv_nsec);
+    clock_gettime(CLOCK_REALTIME, &ts);
+    const auto real = Time(ts.tv_sec, ts.tv_nsec);
+
+    if (real >= mono) {
+      const auto diff = real - mono;
+#ifdef ROS2
+      const auto stamp = Time(v4l2_timeval_to_ns(&bufferinfo.timestamp));
+#else
+      const auto stamp = Time().fromNSec(v4l2_timeval_to_ns(&bufferinfo.timestamp));
+#endif
+      header.stamp = stamp + diff;
+    }
+  }
 
   cv_bridge::CvImage cv_img;
   cv_img.header = header;
