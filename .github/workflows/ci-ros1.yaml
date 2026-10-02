@@ -22,11 +22,6 @@ jobs:
       matrix:
         env:
           - {ROS_DISTRO: noetic, ROS_REPO: testing, DOCKER_IMAGE: "ros:noetic-perception-focal"}
-          - ROS_DISTRO: melodic
-            ROS_REPO: testing
-            DOCKER_IMAGE: "ros:melodic-perception-bionic"
-            UPSTREAM_WORKSPACE: .github/ci.ros1-melodic.rosinstall
-            AFTER_SETUP_UPSTREAM_WORKSPACE: 'cd $BASEDIR/upstream_ws/src/ros-utils; for d in *; do if [[ "$d" != "cras_cpp_common" ]]; then rm -rf "$d"; fi; done; echo "yaml https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/base.yaml" > /etc/ros/rosdep/sources.list.d/21-master.list && rosdep update --include-eol-distros --rosdistro melodic'
         os: ["ubuntu-24.04", "ubuntu-24.04-arm"]
     name: "${{ matrix.env.ROS_DISTRO }}-${{ matrix.os }}"
     env:
