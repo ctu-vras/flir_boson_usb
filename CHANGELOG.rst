@@ -7,6 +7,47 @@
 Changelog for package flir_boson_usb
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+.. 3.0.0 (2026-10-01)
+.. ------------------
+.. Breaking release: the AGC, normalisation, heatmap and radiometric processing moved out of the
+.. node into a ROS-independent ``flir_boson_usb::Pipeline`` stage, and a topic now either carries
+.. data or does not exist at all.
+..
+.. * Topics
+..
+..   * ``image8`` renamed to ``image_visual`` (``mono8``).
+..   * ``image8_norm`` removed; ``agc_norm`` re-stretches ``image_visual`` in place instead of producing a second stream.
+..   * ``image_temp`` is now the absolute temperature of every pixel instead of a ``bgr8`` overlay of the heatmap. The unit is chosen by ``temp_mode``: ``c``, ``k`` and ``f`` are degrees Celsius, Kelvin and Fahrenheit as ``32FC1``, and ``centi_c``, ``centi_k`` and ``centi_f`` are the same units in hundredths as 16-bit integers.
+..   * ``min_temp``, ``max_temp`` and ``ptr_temp`` are only published for radiometric cameras, and report the bounds of the stretch the visible pixels were made from.
+..   * ``image_visual``, ``image_heatmap``, ``image_temp`` and the three temperature topics are no longer advertised when the corresponding parameter disables them.
+..   * All images of one frame share the ``header.stamp`` and ``header.frame_id`` of ``image_raw``.
+..
+.. * Parameters
+..
+..   * ``publish_color`` removed. Its YUV half is now ``yuv_color`` (``image_raw`` as ``bgr8``), its heatmap half is now ``heatmap_mode``.
+..   * ``raw16_agc_low_pct`` / ``raw16_agc_high_pct`` renamed to ``agc_auto_low_pct`` / ``agc_auto_high_pct``; the AGC bounds are now computed in 16-bit counts instead of 8-bit grey levels.
+..   * ``min_temp_limit`` / ``max_temp_limit`` renamed to ``agc_fixed_min_temp`` / ``agc_fixed_max_temp``. Every AGC parameter now names the AGC it belongs to: ``agc_auto_*`` are only honoured by ``agc_mode:=auto_range``, ``agc_fixed_*`` only by ``agc_mode:=fixed_range``, and ``agc_norm`` / ``agc_norm_margin`` apply to whichever of the two produced the bounds.
+..   * ``point_x`` / ``point_y`` renamed to ``temp_ptr_x`` / ``temp_ptr_y``, which says what the point is: the one whose reading is published on ``ptr_temp`` and stamped as the ``Ptr`` overlay text.
+..   * ``norm_margin`` renamed to ``agc_norm_margin`` and only honoured together with the new ``agc_norm``.
+..   * Added ``agc_mode`` (``none``/``fixed_range``/``auto_range``), ``heatmap_mode``, ``overlay_mode``, ``temp_mode`` (``none``/``c``/``k``/``f``/``centi_c``/``centi_k``/``centi_f``), ``radiometric`` and ``radiometric_patterns``.
+..   * Added ``colormap``, which chooses the palette ``image_heatmap`` is painted with; the palette used to be hard-coded to JET. It is a dynamic parameter, so the palette can be switched while the node is running, and the palettes the built OpenCV does not have are not offered.
+..   * ``overlay_mode`` is a dynamic parameter too, so the stamped content can be switched while the node is running.
+..   * Added ``queue_size``, the depth of the publisher queues (the ``keep_last`` history depth) of every topic the node publishes. It defaults to ``1``, which also pins the previously middleware-default depth of the image publishers to a single frame, so a subscriber that falls behind drops the stale frame instead of the driver buffering a backlog.
+..   * Invalid parameter combinations are refused at parameter-set time instead of silently corrected, and the probe point is validated against the real published size (so a 640-sized probe on a Boson\_320 is rejected at startup).
+..
+.. * Heatmap overlay
+..
+..   * The stamped readings are printed in the unit of ``temp_mode`` and carry its unit (``26.85 deg C``, ``2685 cdeg C``) instead of always degrees Celsius. A non-radiometric camera, for which no absolute temperature exists, prints the raw 16-bit counts instead (``30000 counts``).
+..   * The text is drawn white on a black outline, so it stays readable whatever colour the palette picks for the pixels under it.
+..   * ``overlay_mode`` offers ``min_max`` (the bounds text, stamped even when the probe point is outside the published image) and ``ptr`` (the probe text and its marker) next to ``none`` and ``min_max_ptr``.
+..
+.. * Launch files
+..
+..   * The ``rectify`` block rectifies ``image_raw``, ``image_visual``, ``image_heatmap`` and ``image_temp`` according to the enabled modes instead of the removed ``image8`` / ``image8_norm`` topics.
+..   * ``temp_ptr_x`` and ``temp_ptr_y`` are now actually passed to the node.
+..   * ``queue_size`` is exposed as a launch argument next to the other node parameters.
+..   * ``flir_boson_320.launch.xml`` includes the ROS 2 launch file that exists.
+
 2.0.0 (2026-05-28)
 ------------------
 * ROS 2 Humble support (https://github.com/akhilj95/flir_boson_usb2)

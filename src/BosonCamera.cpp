@@ -29,11 +29,10 @@
 #include <fcntl.h>
 #include <functional>
 #include <glob.h>
-#include <iomanip>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <poll.h>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <sys/ioctl.h>
@@ -47,7 +46,9 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cras_cpp_common/string_utils.hpp>
+#include <flir_boson_usb/boson_api.hpp>
 #include <flir_boson_usb/BosonCamera.hpp>
+#include <flir_boson_usb/pipeline.hpp>
 
 #ifdef ROS2
 #include <cv_bridge/cv_bridge.hpp>
@@ -71,6 +72,74 @@
 #endif
 
 namespace flir_boson_usb {
+
+namespace {
+
+//! \brief Turn a fixed-size V4L2 string field into a std::string.
+std::string v4l2String(const unsigned char* field, const size_t max_len) {
+  const auto* text = reinterpret_cast<const char*>(field);
+  return std::string(text, strnlen(text, max_len));
+}
+
+/**
+ * \brief Extract the serial number out of a /dev/v4l/by-id identifier.
+ *
+ * The identifier looks like usb-Manufacturer_Camera_Name_SN123456-video-index0 and the serial is the
+ * last underscore-separated chunk of the name.
+ * \return Empty string when the identifier does not have the expected shape.
+ */
+std::string parseSerial(const std::string& identifier) {
+  const auto parts = cras::split(identifier, "-");
+  if (parts.size() < 3) {
+    return "";
+  }
+  if (!cras::startsWith(parts.back(), "index")) {
+    return "";
+  }
+  if (parts[parts.size() - 2] != "video") {
+    return "";
+  }
+
+  const auto name_parts = cras::split(parts[parts.size() - 3], "_");
+  if (name_parts.size() < 2) {
+    return "";
+  }
+
+  return name_parts.back();
+}
+
+/**
+ * \brief Join the accepted values of a string parameter into a single human-readable list.
+ * \param[in] names The accepted values.
+ * \param[in] separator Put between the names.
+ */
+std::string valueList(const std::vector<std::string>& names, const std::string& separator) {
+  std::string list;
+  for (const auto& name : names) {
+    if (!list.empty()) {
+      list += separator;
+    }
+    list += name;
+  }
+  return list;
+}
+
+//! \brief The colour palettes the heatmap can be painted with.
+std::string colormapList(const std::string& separator) {
+  return valueList(colormapNames(), separator);
+}
+
+//! \brief The units the temperature image can be carried in.
+std::string tempList(const std::string& separator) {
+  return valueList(tempModeNames(), separator);
+}
+
+//! \brief The contents the heatmap can be stamped with.
+std::string overlayList(const std::string& separator) {
+  return valueList(overlayModeNames(), separator);
+}
+
+}  // namespace
 
 #ifdef ROS2
 
@@ -112,13 +181,18 @@ inline rcl_interfaces::msg::ParameterDescriptor paramDescRangeF(
 
 BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
-      max_temp_(0.0), min_temp_(0.0), ptr_temp_(0.0), frame_rate_(0.0), video_mode_(Encoding::YUV), zoom_enable_(false),
-      publish_color_(false), is_yv12_(false), raw16_agc_low_pct_(0.0), raw16_agc_high_pct_(0.0),
-      sensor_type_(SensorTypes::Boson640), point_x_(0), point_y_(0), max_temp_limit_(0), min_temp_limit_(0),
-      norm_margin_(20.0) {
+      is_yv12_(false), frame_rate_(0.0), queue_size_(1), video_mode_(Encoding::YUV),
+      zoom_enable_(false), yuv_color_(false), sensor_type_(SensorTypes::Boson640),
+      radiometric_request_(TriState::Auto), radiometric_(false), agc_mode_(AgcMode::AutoRange),
+      heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), temp_ptr_x_(0), temp_ptr_y_(0),
+      agc_fixed_max_temp_(50), agc_fixed_min_temp_(20), agc_norm_(false), agc_auto_low_pct_(1.0),
+      agc_auto_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet),
+      overlay_mode_(OverlayMode::MinMaxPtr) {
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
     "dev", "/dev/video0", paramDesc("the linux file descriptor location for the camera"));
+  control_dev_path_ = this->declare_parameter(
+    "control_dev", "", paramDesc("/dev/ttyACM0 or another serial device with the camera configuration interface"));
   sensor_type_str_ = this->declare_parameter(
     "sensor_type", "Boson_640",
     paramDesc(
@@ -128,69 +202,195 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
   const auto is640 = sensor_type_str_ == "Boson_640";
   frame_rate_ = this->declare_parameter(
     "frame_rate", 30.0, paramDescRangeF("Frame rate of the camera", 9.0, 60.0, 3.0, "Only 9.0/30.0/60.0 supported."));
-  if (!is640) {
-    zoom_enable_ = this->declare_parameter(
-      "zoom_enable", false,
-      paramDesc("Digital 2x upscale (320x256 -> 640x512) of the published image. Only available on Boson320 cameras."));
-  }
+  queue_size_ = this->declare_parameter(
+    "queue_size", 1,
+    paramDescRangeI(
+      "Size of the publisher queues (the keep_last depth) of every topic the node publishes.", 1, 100));
+  zoom_enable_ = this->declare_parameter(
+    "zoom_enable", false,
+    paramDesc("Digital 2x upscale (320x256 -> 640x512) of the published image. Only available on Boson320 cameras."));
   video_mode_str_ = this->declare_parameter(
     "video_mode", "YUV",
     paramDesc(
       "Camera image format. "
       "YUV: camera-side AGC (mono8/bgr8, low CPU). "
-      "RAW16: raw 16-bit thermal counts (mono16, no camera processing).",
+      "RAW16: raw 16-bit thermal counts (mono16, no camera processing). The visual topics only exist in this mode.",
       "YUV|RAW16"));
-  publish_color_ = this->declare_parameter("publish_color", false, paramDesc("Publish color images."));
-  raw16_agc_low_pct_ = this->declare_parameter(
-    "raw16_agc_low_pct", 1.0,
+  yuv_color_ = this->declare_parameter(
+    "yuv_color", false,
+    paramDesc("Publish image_raw as bgr8 instead of mono8. Only honoured in the YUV video mode."));
+  agc_mode_str_ = this->declare_parameter(
+    "agc_mode", "auto_range",
+    paramDesc(
+      "Content of the image_visual topic. "
+      "none: no visual topic. "
+      "fixed_range: stretch [agc_fixed_min_temp, agc_fixed_max_temp] onto the grey scale. "
+      "auto_range: stretch the percentiles of the current frame given by agc_auto_low_pct and agc_auto_high_pct.",
+      "none|fixed_range|auto_range"));
+  agc_auto_low_pct_ = this->declare_parameter(
+    "agc_auto_low_pct", 1.0,
     paramDescRangeF(
-      "Bottom-tail clip percentage for RAW16 driver-side AGC (e.g. 1.0 discards the darkest 1% of pixels before "
-      "linear stretch). Valid range [0, 50); invalid values revert to 1.0.",
+      "Bottom-tail clip percentage of the frame AGC (1.0 discards the darkest 1% of pixels before the linear "
+      "stretch). Only honoured in agc_mode:=auto_range. Valid range [0, 50).",
       0.0, 50.0));
-  raw16_agc_high_pct_ = this->declare_parameter(
-    "raw16_agc_high_pct", 1.0,
+  agc_auto_high_pct_ = this->declare_parameter(
+    "agc_auto_high_pct", 1.0,
     paramDescRangeF(
-      "Top-tail clip percentage for RAW16 driver-side AGC (e.g. 1.0 discards the brightest 1% of pixels before "
-      "linear stretch). Valid range [0, 50); invalid values revert to 1.0.",
+      "Top-tail clip percentage of the frame AGC (1.0 discards the brightest 1% of pixels before the linear "
+      "stretch). Only honoured in agc_mode:=auto_range. Valid range [0, 50).",
       0.0, 50.0));
+  agc_norm_ = this->declare_parameter(
+    "agc_norm", false,
+    paramDesc(
+      "Renormalise image_visual to the observed frame bounds widened by agc_norm_margin. Applied to the raw counts, "
+      "on top of whichever agc_mode produced the bounds."));
+  agc_norm_margin_ = this->declare_parameter(
+    "agc_norm_margin", 20.0,
+    paramDescRangeF(
+      "How much wider the observed bounds are taken when agc_norm is on, in grey levels of the active stretch.",
+      0.0, 120.0));
+  heatmap_mode_str_ = this->declare_parameter(
+    "heatmap_mode", "none",
+    paramDesc(
+      "Content of the image_heatmap topic. none: no heatmap topic. visual: colourise image_visual. Requires an "
+      "agc_mode other than none.",
+      "none|visual"));
+  overlay_mode_str_ = this->declare_parameter(
+    "overlay_mode", "min_max_ptr",
+    paramDesc(
+      "What is stamped on image_heatmap. none: nothing. min_max_ptr: the minimum, maximum and probe reading text and "
+      "the probe marker. min_max: the minimum and maximum reading text only. ptr: the probe reading text and the "
+      "probe marker. The readings are printed in the unit of temp_mode (in raw counts for a non-radiometric camera). "
+      "Only honoured when a heatmap is published.",
+      overlayList("|")));
+  colormap_str_ = this->declare_parameter(
+    "colormap", "jet",
+    paramDesc(
+      "Colour palette image_heatmap is painted with. Only honoured when a heatmap is published.",
+      colormapList("|")));
+  temp_mode_str_ = this->declare_parameter(
+    "temp_mode", "none",
+    paramDesc(
+      "Unit of the image_temp topic. none: no temperature topic. c, k, f: degrees Celsius, Kelvin and Fahrenheit "
+      "as 32-bit floats. centi_c, centi_k, centi_f: the same units in hundredths as 16-bit integers. Only offered "
+      "for radiometric cameras; also decides whether max_temp, min_temp and ptr_temp exist.",
+      tempList("|")));
   camera_info_url_ = this->declare_parameter(
     "camera_info_url", "",
     paramDesc("Camera calibration file URL (file:// or package://). Empty publishes uncalibrated CameraInfo."));
-  point_x_ = this->declare_parameter(
-    "point_x", is640 ? 319 : 159, paramDescRangeI("X coord of the temperature probe point", 0, is640 ? 639 : 319));
-  point_y_ = this->declare_parameter(
-    "point_y", is640 ? 255 : 127, paramDescRangeI("Y coord of the temperature probe point", 0, is640 ? 511 : 255));
-  max_temp_limit_ = this->declare_parameter(
-    "max_temp_limit", 50, paramDescRangeI("Maximum temperature for constant AGC.", -273, 655 - 273 - 1));
-  min_temp_limit_ = this->declare_parameter(
-    "min_temp_limit", 20, paramDescRangeI("Minimum temperature for constant AGC.", -273, max_temp_limit_));
-  norm_margin_ = this->declare_parameter(
-    "norm_margin", 20.0,
-    paramDescRangeF(
-      "Constant AGC margin (in 8-bit image units). Non-zero values means the given number of lowest and highest "
-      "values will not be used in the linear stretch.",
-      0.0, 120.0));
+  temp_ptr_x_ = this->declare_parameter(
+    "temp_ptr_x", is640 ? 319 : 159,
+    paramDescRangeI(
+      "X coord of the temperature probe point, whose reading is published on ptr_temp", 0, is640 ? 639 : 319));
+  temp_ptr_y_ = this->declare_parameter(
+    "temp_ptr_y", is640 ? 255 : 127,
+    paramDescRangeI(
+      "Y coord of the temperature probe point, whose reading is published on ptr_temp", 0, is640 ? 511 : 255));
+  agc_fixed_max_temp_ = this->declare_parameter(
+    "agc_fixed_max_temp", 50, paramDescRangeI("Upper bound of the fixed_range stretch in degrees Celsius.", -273, 382));
+  agc_fixed_min_temp_ = this->declare_parameter(
+    "agc_fixed_min_temp", 20, paramDescRangeI("Lower bound of the fixed_range stretch in degrees Celsius.", -273, 382));
+  radiometric_str_ = this->declare_parameter(
+    "radiometric", "auto",
+    paramDesc(
+      "Whether the camera can map the raw counts to absolute temperatures. "
+      "auto: match the device identification against radiometric_patterns. "
+      "true/false: override the detection. Only radiometric cameras publish image_temp and the temperature topics.",
+      "auto|true|false"));
 
-  this->validateParams();
+  if (!this->validateParams()) {
+    rclcpp::shutdown();
+    return;
+  }
 
   params_cb_ = this->add_post_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter>& parameters) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& param : parameters) {
-          if (param.get_name() == "point_x") {
-            point_x_ = param.as_int();
-          } else if (param.get_name() == "point_y") {
-            point_y_ = param.as_int();
-          } else if (param.get_name() == "max_temp_limit") {
-            max_temp_limit_ = param.as_int();
-          } else if (param.get_name() == "min_temp_limit") {
-            min_temp_limit_ = param.as_int();
-          } else if (param.get_name() == "norm_margin") {
-            norm_margin_ = param.as_double();
+        rcl_interfaces::msg::SetParametersResult result;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          // The values the parameters had before this call, so that a rejected change leaves them alone.
+          const int temp_ptr_x = temp_ptr_x_;
+          const int temp_ptr_y = temp_ptr_y_;
+          const int agc_fixed_max_temp = agc_fixed_max_temp_;
+          const int agc_fixed_min_temp = agc_fixed_min_temp_;
+          const bool agc_norm = agc_norm_;
+          const double agc_auto_low_pct = agc_auto_low_pct_;
+          const double agc_auto_high_pct = agc_auto_high_pct_;
+          const double agc_norm_margin = agc_norm_margin_;
+          const std::string colormap = colormap_str_;
+          const Colormap palette = colormap_;
+          const std::string overlay_mode = overlay_mode_str_;
+          const OverlayMode overlay = overlay_mode_;
+          //! \brief The reason for the first value this call refused; empty when everything was accepted.
+          std::string rejected;
+          for (const auto& param : parameters) {
+            if (param.get_name() == "temp_ptr_x") {
+              temp_ptr_x_ = param.as_int();
+            } else if (param.get_name() == "temp_ptr_y") {
+              temp_ptr_y_ = param.as_int();
+            } else if (param.get_name() == "agc_fixed_max_temp") {
+              agc_fixed_max_temp_ = param.as_int();
+            } else if (param.get_name() == "agc_fixed_min_temp") {
+              agc_fixed_min_temp_ = param.as_int();
+            } else if (param.get_name() == "agc_norm") {
+              agc_norm_ = param.as_bool();
+            } else if (param.get_name() == "agc_norm_margin") {
+              agc_norm_margin_ = param.as_double();
+            } else if (param.get_name() == "agc_auto_low_pct") {
+              agc_auto_low_pct_ = param.as_double();
+            } else if (param.get_name() == "agc_auto_high_pct") {
+              agc_auto_high_pct_ = param.as_double();
+            } else if (param.get_name() == "colormap") {
+              // rclcpp calls the post-set callback after the value reached the parameter storage and ignores
+              // its result, so the rejection is reported here and the previous palette is put back below.
+              const std::string name = param.as_string();
+              if (!setColormap(name)) {
+                CRAS_WARN("Unknown colormap '%s', keeping '%s'.", name.c_str(), colormap_str_.c_str());
+                if (rejected.empty()) {
+                  rejected = "colormap has to be one of " + colormapList(", ");
+                }
+              }
+            } else if (param.get_name() == "overlay_mode") {
+              // The same situation as with the palette: the rejected value is already in the parameter
+              // storage, so the previous content is put back below.
+              const std::string name = param.as_string();
+              if (!setOverlayMode(name)) {
+                CRAS_WARN("Unknown overlay_mode '%s', keeping '%s'.", name.c_str(), overlay_mode_str_.c_str());
+                if (rejected.empty()) {
+                  rejected = "overlay_mode has to be one of " + overlayList(", ");
+                }
+              }
+            }
+          }
+          result.successful = true;
+          if (!rejected.empty()) {
+            result.successful = false;
+            result.reason = rejected;
+          } else if (agc_fixed_min_temp_ >= agc_fixed_max_temp_) {
+            result.successful = false;
+            result.reason = "agc_fixed_min_temp has to be lower than agc_fixed_max_temp";
+          } else if (!probeInBounds()) {
+            result.successful = false;
+            result.reason = "the probe point has to lie inside the published image";
+          }
+          if (!result.successful) {
+            temp_ptr_x_ = temp_ptr_x;
+            temp_ptr_y_ = temp_ptr_y;
+            agc_fixed_max_temp_ = agc_fixed_max_temp;
+            agc_fixed_min_temp_ = agc_fixed_min_temp;
+            agc_norm_ = agc_norm;
+            agc_auto_low_pct_ = agc_auto_low_pct;
+            agc_auto_high_pct_ = agc_auto_high_pct;
+            agc_norm_margin_ = agc_norm_margin;
+            colormap_str_ = colormap;
+            colormap_ = palette;
+            overlay_mode_str_ = overlay_mode;
+            overlay_mode_ = overlay;
           }
         }
-        rcl_interfaces::msg::SetParametersResult result;
-        result.successful = true;
+        if (result.successful) {
+          applyPipelineConfig();
+        }
         return result;
       });
 
@@ -204,7 +404,7 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
 
 #else
 
-BosonCamera::BosonCamera() : fd_(-1) {}
+BosonCamera::BosonCamera() : fd_(-1), queue_size_(1) {}
 
 void BosonCamera::onInit() {
   nh_ = getNodeHandle();
@@ -213,20 +413,31 @@ void BosonCamera::onInit() {
   pnh_.param<std::string>("frame_id", frame_id_, "boson_camera");
   pnh_.param<std::string>("dev", dev_path_, "/dev/video0");
   pnh_.param<double>("frame_rate", frame_rate_, 30.0);
+  pnh_.param<int>("queue_size", queue_size_, 1);
   pnh_.param<std::string>("video_mode", video_mode_str_, "YUV");
   pnh_.param<bool>("zoom_enable", zoom_enable_, false);
-  pnh_.param<bool>("publish_color", publish_color_, false);
+  pnh_.param<bool>("yuv_color", yuv_color_, false);
   pnh_.param<std::string>("sensor_type", sensor_type_str_, "Boson_640");
   pnh_.param<std::string>("camera_info_url", camera_info_url_, "");
-  pnh_.param<int>("point_x", point_x_, 319);
-  pnh_.param<int>("point_y", point_y_, 255);
-  pnh_.param<int>("max_temp_limit", max_temp_limit_, 50);
-  pnh_.param<int>("min_temp_limit", min_temp_limit_, 20);
-  pnh_.param<double>("norm_margin", norm_margin_, 20.0);
-  pnh_.param<double>("raw16_agc_low_pct", raw16_agc_low_pct_, 1.0);
-  pnh_.param<double>("raw16_agc_high_pct", raw16_agc_high_pct_, 1.0);
+  pnh_.param<std::string>("agc_mode", agc_mode_str_, "auto_range");
+  pnh_.param<bool>("agc_norm", agc_norm_, false);
+  pnh_.param<double>("agc_auto_low_pct", agc_auto_low_pct_, 1.0);
+  pnh_.param<double>("agc_auto_high_pct", agc_auto_high_pct_, 1.0);
+  pnh_.param<double>("agc_norm_margin", agc_norm_margin_, 20.0);
+  pnh_.param<std::string>("heatmap_mode", heatmap_mode_str_, "none");
+  pnh_.param<std::string>("overlay_mode", overlay_mode_str_, "min_max_ptr");
+  pnh_.param<std::string>("colormap", colormap_str_, "jet");
+  pnh_.param<std::string>("temp_mode", temp_mode_str_, "none");
+  pnh_.param<int>("temp_ptr_x", temp_ptr_x_, 319);
+  pnh_.param<int>("temp_ptr_y", temp_ptr_y_, 255);
+  pnh_.param<int>("agc_fixed_max_temp", agc_fixed_max_temp_, 50);
+  pnh_.param<int>("agc_fixed_min_temp", agc_fixed_min_temp_, 20);
+  pnh_.param<std::string>("radiometric", radiometric_str_, "auto");
 
-  this->validateParams();
+  if (!this->validateParams()) {
+    ros::shutdown();
+    return;
+  }
 
   reconfigure_server_ = std::make_shared<dynamic_reconfigure::Server<flir_boson_usb::BosonCameraConfig>>(pnh_);
   // The callback has to be spelled out as a boost::function to disambiguate
@@ -241,12 +452,49 @@ void BosonCamera::onInit() {
 }
 
 void BosonCamera::reconfigureCallback(flir_boson_usb::BosonCameraConfig& config, uint32_t /* level */) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  point_x_ = config.point_x;
-  point_y_ = config.point_y;
-  max_temp_limit_ = config.max_temp_limit;
-  min_temp_limit_ = config.min_temp_limit;
-  norm_margin_ = config.norm_margin;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // dynamic_reconfigure has no way of expressing a relation between two fields, so an invalid request
+    // is corrected here instead of being rejected.
+    if (config.agc_fixed_min_temp >= config.agc_fixed_max_temp) {
+      CRAS_WARN(
+        "agc_fixed_min_temp (%d) has to be lower than agc_fixed_max_temp (%d), keeping the previous limits.",
+        config.agc_fixed_min_temp, config.agc_fixed_max_temp);
+      config.agc_fixed_min_temp = agc_fixed_min_temp_;
+      config.agc_fixed_max_temp = agc_fixed_max_temp_;
+    }
+    const auto size = publishedSize();
+    if (config.temp_ptr_x < 0 || config.temp_ptr_x >= size.width || config.temp_ptr_y < 0 ||
+        config.temp_ptr_y >= size.height)
+    {
+      CRAS_WARN(
+        "The probe point (%d, %d) is outside the published image (%dx%d), keeping the previous probe.",
+        config.temp_ptr_x, config.temp_ptr_y, size.width, size.height);
+      config.temp_ptr_x = temp_ptr_x_;
+      config.temp_ptr_y = temp_ptr_y_;
+    }
+    temp_ptr_x_ = config.temp_ptr_x;
+    temp_ptr_y_ = config.temp_ptr_y;
+    agc_fixed_max_temp_ = config.agc_fixed_max_temp;
+    agc_fixed_min_temp_ = config.agc_fixed_min_temp;
+    agc_norm_ = config.agc_norm;
+    agc_norm_margin_ = config.agc_norm_margin;
+    // An unknown palette would silently keep the previous one, so put it back into the config to let the
+    // reconfigure server (and therefore the GUI) show the palette that is really used.
+    if (!setColormap(config.colormap)) {
+      CRAS_WARN("Unknown colormap '%s', keeping '%s'.", config.colormap.c_str(), colormap_str_.c_str());
+      config.colormap = colormap_str_;
+    }
+    // The same for the overlay: an unknown content is put back so that the GUI shows what is stamped.
+    if (!setOverlayMode(config.overlay_mode)) {
+      CRAS_WARN(
+        "Unknown overlay_mode '%s', keeping '%s'.", config.overlay_mode.c_str(), overlay_mode_str_.c_str());
+      config.overlay_mode = overlay_mode_str_;
+    }
+    agc_auto_low_pct_ = config.agc_auto_low_pct;
+    agc_auto_high_pct_ = config.agc_auto_high_pct;
+  }
+  applyPipelineConfig();
 }
 
 #endif
@@ -255,32 +503,203 @@ BosonCamera::~BosonCamera() {
   closeCamera();
 }
 
-void BosonCamera::validateParams() {
+bool BosonCamera::setColormap(const std::string& name) {
+  Colormap colormap;
+  if (!colormapFromString(cras::toLower(name), colormap)) {
+    return false;
+  }
+  colormap_str_ = name;
+  colormap_ = colormap;
+  return true;
+}
+
+bool BosonCamera::setOverlayMode(const std::string& name) {
+  OverlayMode mode;
+  if (!overlayModeFromString(cras::toLower(name), mode)) {
+    return false;
+  }
+  overlay_mode_str_ = name;
+  overlay_mode_ = mode;
+  return true;
+}
+
+bool BosonCamera::setTempMode(const std::string& name) {
+  TempMode mode;
+  if (!tempModeFromString(cras::toLower(name), mode)) {
+    return false;
+  }
+  temp_mode_str_ = name;
+  temp_mode_ = mode;
+  temp_encoding_ = tempEncoding(mode);
+  return true;
+}
+
+bool BosonCamera::validateParams() {
   if (!std::isfinite(frame_rate_) || frame_rate_ <= 0.0) {
     CRAS_WARN("Invalid frame_rate parameter (%.3f). Clamping to 1.0 Hz.", frame_rate_);
     frame_rate_ = 1.0;
+  }
+
+  if (queue_size_ < 1) {
+    CRAS_WARN("Invalid queue_size parameter (%d). Reverting to 1.", queue_size_);
+    queue_size_ = 1;
+  }
+
+  // The published image size is derived from the sensor type and the video mode, and the probe point is
+  // validated against it, so both have to be resolved before anything is checked.
+  if (video_mode_str_ == "RAW16") {
+    video_mode_ = Encoding::RAW16;
+  } else if (video_mode_str_ == "YUV") {
+    video_mode_ = Encoding::YUV;
+  } else {
+    CRAS_ERROR("Invalid video_mode value '%s', expected YUV or RAW16.", video_mode_str_.c_str());
+    return false;
+  }
+
+  if (sensor_type_str_ == "Boson_320" || sensor_type_str_ == "boson_320") {
+    sensor_type_ = SensorTypes::Boson320;
+  } else if (sensor_type_str_ == "Boson_640" || sensor_type_str_ == "boson_640") {
+    sensor_type_ = SensorTypes::Boson640;
+  } else {
+    CRAS_ERROR(
+      "Invalid sensor_type value '%s', expected Boson_320 or Boson_640.", sensor_type_str_.c_str());
+    return false;
   }
 
   const auto clip_valid =
     [](const double p) {
       return std::isfinite(p) && p >= 0.0 && p < 50.0;
     };
-  if (!clip_valid(raw16_agc_low_pct_) || !clip_valid(raw16_agc_high_pct_)) {
+  if (!clip_valid(agc_auto_low_pct_) || !clip_valid(agc_auto_high_pct_)) {
     CRAS_WARN(
-      "Invalid AGC clip percentages (%.2f / %.2f). Reverting to 1.0 / 1.0.", raw16_agc_low_pct_, raw16_agc_high_pct_);
-    raw16_agc_low_pct_ = 1.0;
-    raw16_agc_high_pct_ = 1.0;
+      "Invalid AGC clip percentages (%.2f / %.2f). Reverting to 1.0 / 1.0.", agc_auto_low_pct_,
+      agc_auto_high_pct_);
+    agc_auto_low_pct_ = 1.0;
+    agc_auto_high_pct_ = 1.0;
   }
+
+  if (agc_mode_str_ == "none") {
+    agc_mode_ = AgcMode::None;
+  } else if (agc_mode_str_ == "fixed_range") {
+    agc_mode_ = AgcMode::FixedRange;
+  } else if (agc_mode_str_ == "auto_range") {
+    agc_mode_ = AgcMode::AutoRange;
+  } else {
+    CRAS_ERROR("Invalid agc_mode value '%s', expected none, fixed_range or auto_range.", agc_mode_str_.c_str());
+    return false;
+  }
+
+  if (heatmap_mode_str_ == "none") {
+    heatmap_mode_ = HeatmapMode::None;
+  } else if (heatmap_mode_str_ == "visual") {
+    heatmap_mode_ = HeatmapMode::Visual;
+  } else {
+    CRAS_ERROR("Invalid heatmap_mode value '%s', expected none or visual.", heatmap_mode_str_.c_str());
+    return false;
+  }
+
+  if (!setOverlayMode(overlay_mode_str_)) {
+    CRAS_ERROR(
+      "Invalid overlay_mode value '%s', expected one of %s.", overlay_mode_str_.c_str(),
+      overlayList(", ").c_str());
+    return false;
+  }
+
+  if (!setColormap(colormap_str_)) {
+    CRAS_ERROR(
+      "Invalid colormap value '%s', expected one of %s.", colormap_str_.c_str(), colormapList(", ").c_str());
+    return false;
+  }
+
+  if (!setTempMode(temp_mode_str_)) {
+    CRAS_ERROR(
+      "Invalid temp_mode value '%s', expected one of %s.", temp_mode_str_.c_str(), tempList(", ").c_str());
+    return false;
+  }
+
+  if (agc_fixed_min_temp_ >= agc_fixed_max_temp_) {
+    CRAS_ERROR(
+      "agc_fixed_min_temp (%d) has to be lower than agc_fixed_max_temp (%d).", agc_fixed_min_temp_,
+      agc_fixed_max_temp_);
+    return false;
+  }
+
+  if (!probeInBounds()) {
+    const auto size = publishedSize();
+    CRAS_ERROR(
+      "The probe point (%d, %d) is outside the published image (%dx%d).", temp_ptr_x_, temp_ptr_y_, size.width,
+      size.height);
+    return false;
+  }
+
+  if (radiometric_str_ == "true") {
+    radiometric_request_ = TriState::Yes;
+  } else if (radiometric_str_ == "false") {
+    radiometric_request_ = TriState::No;
+  } else if (radiometric_str_.empty() || radiometric_str_ == "auto") {
+    radiometric_request_ = TriState::Auto;
+  } else {
+    CRAS_ERROR("Invalid radiometric value '%s', expected auto, true or false.", radiometric_str_.c_str());
+    return false;
+  }
+
+  return true;
 }
 
-inline std::string BosonCamera::detectSerial() const {
+cv::Size BosonCamera::publishedSize() const {
+  const cv::Size sensor_size =
+    sensor_type_ == SensorTypes::Boson640 ? cv::Size(640, 512) : cv::Size(320, 256);
+  if (zoom_enable_ && sensor_type_ == SensorTypes::Boson320 && video_mode_ == Encoding::RAW16) {
+    return cv::Size(2 * sensor_size.width, 2 * sensor_size.height);
+  }
+  return sensor_size;
+}
+
+bool BosonCamera::probeInBounds() const {
+  const auto size = publishedSize();
+  return temp_ptr_x_ >= 0 && temp_ptr_x_ < size.width && temp_ptr_y_ >= 0 && temp_ptr_y_ < size.height;
+}
+
+PipelineConfig BosonCamera::pipelineConfig() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  PipelineConfig config;
+  config.agc_mode = agc_mode_;
+  config.agc_norm = agc_norm_;
+  config.heatmap_mode = heatmap_mode_;
+  config.overlay_mode = overlay_mode_;
+  config.colormap = colormap_;
+  config.temp_mode = temp_mode_;
+  config.radiometric = radiometric_;
+  config.agc_auto_low_pct = agc_auto_low_pct_;
+  config.agc_auto_high_pct = agc_auto_high_pct_;
+  config.agc_fixed_min_degC = agc_fixed_min_temp_;
+  config.agc_fixed_max_degC = agc_fixed_max_temp_;
+  config.agc_norm_margin = agc_norm_margin_;
+  config.probe_x = temp_ptr_x_;
+  config.probe_y = temp_ptr_y_;
+  config.size = publishedSize();
+  return config;
+}
+
+void BosonCamera::applyPipelineConfig() {
+  // pipelineConfig() takes the lock itself, so the snapshot has to be taken before it is locked again.
+  const PipelineConfig config = pipelineConfig();
+  std::lock_guard<std::mutex> lock(mutex_);
+  pipeline_.configure(config);
+}
+
+bool BosonCamera::detectDevice() {
+  device_id_.clear();
+  device_serial_.clear();
+
   if (dev_path_.empty()) {
-    return "";
+    return false;
   }
 
-  auto resolved_device_path = realpath(dev_path_.c_str(), nullptr);
+  auto* resolved_device_path = realpath(dev_path_.c_str(), nullptr);
   if (resolved_device_path == nullptr) {
-    return "";
+    CRAS_WARN("Could not resolve the device path %s.", dev_path_.c_str());
+    return false;
   }
 
   const std::string resolved_device(resolved_device_path);
@@ -288,123 +707,151 @@ inline std::string BosonCamera::detectSerial() const {
 
   glob_t globbuf;
   if (glob("/dev/v4l/by-id/*", 0, nullptr, &globbuf) != 0) {
-    return "";
+    CRAS_WARN("No V4L2 device identification is available under /dev/v4l/by-id.");
+    return false;
   }
 
-  std::string target_identifier;
   char resolved_path[PATH_MAX];
-
   for (size_t i = 0; i < globbuf.gl_pathc; ++i) {
     // Resolve the symlink (e.g., /dev/v4l/by-id/usb-... -> ../../video0)
-    if (realpath(globbuf.gl_pathv[i], resolved_path) != nullptr) {
-      if (resolved_device == std::string(resolved_path)) {
-        // Extract the identifier string from the symlink path
-        const std::string full_path(globbuf.gl_pathv[i]);
-        const auto last_slash = full_path.find_last_of('/');
-        if (last_slash != std::string::npos) {
-          target_identifier = full_path.substr(last_slash + 1);
-        }
-        break;
+    if (realpath(globbuf.gl_pathv[i], resolved_path) != nullptr && resolved_device == std::string(resolved_path)) {
+      // Extract the identifier string from the symlink path
+      const std::string full_path(globbuf.gl_pathv[i]);
+      const auto last_slash = full_path.find_last_of('/');
+      if (last_slash != std::string::npos) {
+        device_id_ = full_path.substr(last_slash + 1);
       }
+      break;
     }
   }
   globfree(&globbuf);
 
-  // target_identifier should now contain a string like "usb-Manufacturer_Camera_Name_SN123456-video-index0"
-  CRAS_INFO("Identified camera device as: %s", target_identifier.c_str());
-
-  const auto parts = cras::split(target_identifier, "-");
-  if (parts.size() < 3) {
-    return "";
-  }
-  if (!cras::startsWith(parts.back(), "index")) {
-    return "";
-  }
-  if (parts[parts.size() - 2] != "video") {
-    return "";
+  if (device_id_.empty()) {
+    CRAS_WARN("Could not match %s to any device under /dev/v4l/by-id.", resolved_device.c_str());
+    return false;
   }
 
-  const auto parts2 = cras::split(parts[parts.size() - 3], "_");
-  if (parts2.size() < 2) {
-    return "";
+  // device_id_ should now contain a string like "usb-Manufacturer_Camera_Name_SN123456-video-index0"
+  CRAS_INFO("Identified camera device as: %s", device_id_.c_str());
+
+  device_serial_ = parseSerial(device_id_);
+  if (device_serial_.empty()) {
+    CRAS_WARN("Could not parse a serial number out of the device identifier %s.", device_id_.c_str());
+  } else {
+    CRAS_INFO("Identified camera serial as: %s", device_serial_.c_str());
   }
 
-  const auto& serial = parts2.back();
-  CRAS_INFO("Identified camera serial as: %s", serial.c_str());
+  return true;
+}
 
-  return serial;
+void BosonCamera::resolveRadiometric() {
+  if (radiometric_request_ != TriState::Auto) {
+    radiometric_ = radiometric_request_ == TriState::Yes;
+    CRAS_INFO(
+      "Camera radiometric state forced to %s by the radiometric parameter.", radiometric_ ? "true" : "false");
+    return;
+  }
+
+  if (api_ && *api_) {
+    if (const auto maybe_radiometric = api_->isRadiometric(); maybe_radiometric.has_value()) {
+      radiometric_ = *maybe_radiometric;
+      if (radiometric_) {
+        CRAS_INFO("Camera is radiometric according to its control channel.");
+      } else {
+        CRAS_INFO("Camera is not radiometric according to its control channel.");
+      }
+      return;
+    }
+  }
+
+  CRAS_WARN(
+    "Camera radiometric capability was set to be autodetected, but the detection via control channel failed. "
+    "Either provide a valid control device path or set radiometric parameter to Yes or No. Defaulting to No.");
+  radiometric_ = false;
 }
 
 void BosonCamera::init() {
   CRAS_INFO("Initializing FLIR Boson on %s", dev_path_.c_str());
+
+  // The video mode and the sensor type were resolved by validateParams(), which also validated the probe
+  // point against the published size that follows from them.
+  std::string cam_name = sensor_type_ == SensorTypes::Boson640 ? "Boson640" : "Boson320";
+
+  detectDevice();
+  if (!device_serial_.empty()) {
+    CRAS_INFO("Camera serial was found. Setting camera name to: %s", device_serial_.c_str());
+    cam_name = device_serial_;
+  }
+
+  if (!control_dev_path_.empty()) {
+    CRAS_INFO("Trying to initialize control channel on %s", control_dev_path_.c_str());
+    try {
+      api_ = std::make_unique<BosonAPI>(control_dev_path_);
+    } catch (const std::exception& e) {
+      CRAS_ERROR("Failed to initialize Boson API: %s", e.what());
+    }
+
+    if (api_ && *api_) {
+      if (!device_serial_.empty()) {
+        if (const auto maybe_serial = api_->getCameraSerialNumber(); maybe_serial.has_value()) {
+          if (device_serial_ != cras::to_string(*maybe_serial)) {
+            CRAS_ERROR(
+              "Camera serial number mismatch: camere serial %s, control serial %u. Not using the control channel.",
+              device_serial_.c_str(), *maybe_serial);
+            api_.reset();
+          } else {
+            CRAS_INFO("Camera serial number matches control-channel serial.");
+          }
+        }
+      } else {
+        if (const auto maybe_serial = api_->getCameraSerialNumber(); maybe_serial.has_value()) {
+          cam_name = device_serial_ = cras::to_string(*maybe_serial);
+          CRAS_INFO("Camera serial was found via control channel. Setting camera name to: %s", device_serial_.c_str());
+        }
+      }
+    }
+
+    const auto bool_to_str =
+      [](const cras::expected<bool, std::string>& val) {
+        return val.has_value() ? (*val ? "Y" : "N") : "?";
+      };
+    const auto stamp_to_str =
+      [](const cras::expected<float, std::string>& val) {
+        return val.has_value() ? cras::to_string(*val) : "?";
+      };
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
+
+    if (api_ && *api_) {
+      const auto fw = api_->getCameraFirmwareVersion().value_or(std::array<uint32_t, 3>{0, 0, 0});
+      std::array<cras::expected<float, std::string>, 4> timestamps;
+      bool has_timestamp {false};
+      for (int32_t i = 0; i < timestamps.size(); ++i) {
+        timestamps[i] = api_->getTimestamp(i);
+        has_timestamp |= timestamps[i].has_value();
+      }
+
+      CRAS_WARN(
+        "PN: %s, SN: %u, FW: %u.%u.%u",
+        api_->getCameraProductNumber().value_or("?").c_str(), api_->getCameraSerialNumber().value_or(-1),
+        fw[0], fw[1], fw[2]);
+      CRAS_WARN(
+        "Radiometry: %s, Uptime: %u, Chip Temperature [degC]: %f, Telemetry: %s",
+        bool_to_str(api_->isRadiometric()), api_->getUptime().value_or(0),
+        api_->getSensorTemperature().value_or(nan), bool_to_str(api_->isTelemetryEnabled()));
+      if (has_timestamp) {
+        CRAS_WARN(
+          "Timestamps: UARTINIT: %s, PIXELCLOCKINIT: %s, AUTHEVENT: %s, FIRSTVALIDIMAGE: %s",
+          stamp_to_str(timestamps[0]).c_str(), stamp_to_str(timestamps[1]).c_str(), stamp_to_str(timestamps[2]).c_str(),
+          stamp_to_str(timestamps[3]).c_str());
+      }
+    }
+  }
+
 #ifdef ROS2
   camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(this);
-
-  const auto cam_pub_qos = rclcpp::SensorDataQoS().get_rmw_qos_profile();
-  // Set explicit Best-Effort / SensorData QoS for 60Hz camera streams
-  image_pub_ = image_transport::create_camera_publisher(this, "image_raw", cam_pub_qos);
-  image_pub_8_ = image_transport::create_publisher(this, "image8", cam_pub_qos);
-  image_pub_8_norm_ = image_transport::create_publisher(this, "image8_norm", cam_pub_qos);
-  if (publish_color_) {
-    image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos);
-    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos);
-  }
-
-  max_temp_pub_ = this->create_publisher<Temperature>("max_temp", 1);
-  min_temp_pub_ = this->create_publisher<Temperature>("min_temp", 1);
-  ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", 1);
 #else
   camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(nh_);
-  it_ = std::make_shared<image_transport::ImageTransport>(nh_);
-  image_pub_ = it_->advertiseCamera("image_raw", 1);
-  image_pub_8_ = it_->advertise("image8", 1);
-  image_pub_8_norm_ = it_->advertise("image8_norm", 1);
-  if (publish_color_) {
-    image_pub_heatmap_ = it_->advertise("image_heatmap", 1);
-    image_pub_temp_ = it_->advertise("image_temp", 1);
-  }
-
-  max_temp_pub_ = nh_.advertise<Temperature>("max_temp", 1);
-  min_temp_pub_ = nh_.advertise<Temperature>("min_temp", 1);
-  ptr_temp_pub_ = nh_.advertise<Temperature>("ptr_temp", 1);
 #endif
-
-  if (video_mode_str_ == "RAW16") {
-    video_mode_ = Encoding::RAW16;
-  } else if (video_mode_str_ == "YUV") {
-    video_mode_ = Encoding::YUV;
-  } else {
-    CRAS_ERROR("Invalid video_mode. Use YUV or RAW16.");
-#ifndef ROS2
-    ros::shutdown();
-#else
-    rclcpp::shutdown();
-#endif
-    return;
-  }
-
-  std::string cam_name;
-  if (sensor_type_str_ == "Boson_320" || sensor_type_str_ == "boson_320") {
-    sensor_type_ = SensorTypes::Boson320;
-    cam_name = "Boson320";
-  } else if (sensor_type_str_ == "Boson_640" || sensor_type_str_ == "boson_640") {
-    sensor_type_ = SensorTypes::Boson640;
-    cam_name = "Boson640";
-  } else {
-    CRAS_ERROR("Invalid sensor_type value provided.");
-#ifdef ROS2
-    rclcpp::shutdown();
-#else
-    ros::shutdown();
-#endif
-    return;
-  }
-
-  const auto serial = detectSerial();
-  if (!serial.empty()) {
-    CRAS_INFO("Camera serial was found. Setting camera name to: %s", serial.c_str());
-    cam_name = serial;
-  }
 
   if (camera_info_url_.empty()) {
     CRAS_WARN(
@@ -423,12 +870,6 @@ void BosonCamera::init() {
     }
   }
 
-  if (video_mode_ != Encoding::RAW16 && (raw16_agc_low_pct_ != 1.0 || raw16_agc_high_pct_ != 1.0)) {
-    CRAS_WARN(
-      "AGC clip percentages (raw16_agc_low_pct / raw16_agc_high_pct) are only supported in RAW16 mode and will be "
-      "ignored.");
-  }
-
   if (zoom_enable_ && sensor_type_ == SensorTypes::Boson640) {
     CRAS_WARN("zoom_enable is only for Boson320.");
   }
@@ -439,6 +880,8 @@ void BosonCamera::init() {
       video_mode_str_.c_str());
   }
 
+  resolveRadiometric();
+
   if (!openCamera()) {
 #ifdef ROS2
     rclcpp::shutdown();
@@ -447,6 +890,10 @@ void BosonCamera::init() {
 #endif
     return;
   }
+
+  // The stage needs both the frame size, which openCamera() determined, and the radiometric state.
+  applyPipelineConfig();
+  createPublishers();
 
   const double period = 1.0 / frame_rate_;
 #ifdef ROS2
@@ -462,71 +909,64 @@ void BosonCamera::init() {
 #endif
 }
 
-void BosonCamera::agc(
-    const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16,
-    const double clip_low_pct, const double clip_high_pct,
-    double* max_temp, double* min_temp) {
-  CV_Assert(input_16.type() == CV_16UC1);
+void BosonCamera::createPublishers() {
+  // A topic either carries data or it does not exist, so a publisher is only created for the outputs the
+  // preset enables. The processing stage uses exactly the same conditions.
+  const bool visual = video_mode_ == Encoding::RAW16 && agc_mode_ != AgcMode::None;
+  const bool heatmap = visual && heatmap_mode_ != HeatmapMode::None;
+  const bool temp = radiometric_ && temp_mode_ != TempMode::None && video_mode_ == Encoding::RAW16;
 
-  output_16 = input_16.clone();
-
-  int histSize = 65536;
-  float range[] = {0, 65536};
-  const float* histRange = {range};
-
-  // Reuses the pre-allocated hist_ member variable
-  cv::calcHist(&input_16, 1, 0, cv::Mat(), hist_, 1, &histSize, &histRange, true, false);
-
-  double total_pixels = input_16.rows * input_16.cols;
-  double clip_low_count = (clip_low_pct / 100.0) * total_pixels;
-  double clip_high_count = (clip_high_pct / 100.0) * total_pixels;
-
-  int min_val = 0, max_val = 65535;
-  double current_count = 0.0;  // double prevents truncation on large sensors
-
-  // Find bottom percentile
-  for (int i = 0; i < histSize; i++) {
-    current_count += hist_.at<float>(i);
-    if (current_count > clip_low_count) {
-      min_val = i;
-      break;
+  if (video_mode_ != Encoding::RAW16) {
+    if (agc_mode_ != AgcMode::None || heatmap_mode_ != HeatmapMode::None || temp_mode_ != TempMode::None) {
+      CRAS_INFO(
+        "The visual, heatmap and temperature outputs are only produced in RAW16 mode; publishing image_raw only.");
     }
+  } else if (agc_mode_ == AgcMode::None) {
+    CRAS_INFO("agc_mode is none; publishing image_raw only.");
   }
 
-  // Find top percentile
-  current_count = 0.0;
-  for (int i = histSize - 1; i >= 0; i--) {
-    current_count += hist_.at<float>(i);
-    if (current_count > clip_high_count) {
-      max_val = i;
-      break;
-    }
+  if (temp_mode_ != TempMode::None && !radiometric_) {
+    CRAS_WARN(
+      "temp_mode is %s but the camera was resolved as non-radiometric; the raw counts cannot be turned into "
+      "absolute temperatures, so no temperature output is published.", temp_mode_str_.c_str());
   }
 
-  if (max_val <= min_val) {
-    max_val = min_val + 1;  // Prevent division by zero
+#ifdef ROS2
+  const auto cam_pub_qos = rclcpp::SystemDefaultsQoS().keep_last(static_cast<size_t>(queue_size_));
+  const auto cam_pub_qos_rmw = cam_pub_qos.get_rmw_qos_profile();
+  rclcpp::PublisherOptions opts {};
+  opts.qos_overriding_options = rclcpp::QosOverridingOptions::with_default_policies();
+
+  image_pub_ = image_transport::create_camera_publisher(this, "image_raw", cam_pub_qos_rmw, opts);
+  if (visual) {
+    image_pub_visual_ = image_transport::create_publisher(this, "image_visual", cam_pub_qos_rmw, opts);
   }
-
-  *max_temp = max_val / 100. - 273.15;
-  *min_temp = min_val / 100. - 273.15;
-
-  if (max_temp_limit_ < min_temp_limit_) {
-    std::stringstream err_msg_ss;
-    err_msg_ss << "max_temp_limit should be larger than min_temp_limit ";
-    err_msg_ss << "(max_temp_limit: " << max_temp_limit_ << ", min_temp_limit: " << min_temp_limit_ << ")";
-    throw std::range_error(err_msg_ss.str());
+  if (heatmap) {
+    image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos_rmw, opts);
   }
-
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    max_val = (max_temp_limit_ + 273.15) * 100;
-    min_val = (min_temp_limit_ + 273.15) * 100;
+  if (temp) {
+    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos_rmw, opts);
+    max_temp_pub_ = this->create_publisher<Temperature>("max_temp", cam_pub_qos, opts);
+    min_temp_pub_ = this->create_publisher<Temperature>("min_temp", cam_pub_qos, opts);
+    ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", cam_pub_qos, opts);
   }
-
-  // Scale using SIMD-optimized convertTo
-  double scale = 255.0 / (max_val - min_val);
-  double shift = -min_val * scale;
-  input_16.convertTo(output_8, CV_8UC1, scale, shift);
+#else
+  const uint32_t queue_size = static_cast<uint32_t>(queue_size_);
+  it_ = std::make_shared<image_transport::ImageTransport>(nh_);
+  image_pub_ = it_->advertiseCamera("image_raw", queue_size);
+  if (visual) {
+    image_pub_visual_ = it_->advertise("image_visual", queue_size);
+  }
+  if (heatmap) {
+    image_pub_heatmap_ = it_->advertise("image_heatmap", queue_size);
+  }
+  if (temp) {
+    image_pub_temp_ = it_->advertise("image_temp", queue_size);
+    max_temp_pub_ = nh_.advertise<Temperature>("max_temp", queue_size);
+    min_temp_pub_ = nh_.advertise<Temperature>("min_temp", queue_size);
+    ptr_temp_pub_ = nh_.advertise<Temperature>("ptr_temp", queue_size);
+  }
+#endif
 }
 
 bool BosonCamera::openCamera() {
@@ -548,8 +988,12 @@ bool BosonCamera::openCamera() {
   int requested_width = (sensor_type_ == SensorTypes::Boson640) ? 640 : 320;
   int requested_height = (sensor_type_ == SensorTypes::Boson640) ? 512 : 256;
 
-  if (zoom_enable_ && sensor_type_ == SensorTypes::Boson320 && video_mode_ == Encoding::RAW16) {
-    thermal16_linear_zoom_ = cv::Mat(512, 640, CV_8UC1);
+  // Request telemetry by trying to negotiate a larger height; if telemetry is not supported, this automatically falls
+  // back to the 2-row-smaller resolution.
+  bool telemetry_requested {false};
+  if (api_ && api_->isTelemetryEnabled().value_or(false)) {
+    requested_height += 2;
+    telemetry_requested = true;
   }
 
   // 2. Set format parameters
@@ -575,6 +1019,10 @@ bool BosonCamera::openCamera() {
   // (This absorbs the telemetry offset seamlessly if it is turned on)
   width_ = format.fmt.pix.width;
   height_ = format.fmt.pix.height;
+
+  if (telemetry_requested && height_ == requested_height) {
+    CRAS_INFO("Extra telemetry rows are configured.");
+  }
 
   // YUV unpack path assumes tightly packed planes. Assert that here.
   if (video_mode_ == Encoding::YUV && format.fmt.pix.bytesperline != 0 &&
@@ -661,18 +1109,26 @@ bool BosonCamera::openCamera() {
     }
   }
 
-  // Pre-allocate output Mats to expected_height_
-  thermal16_linear_ = cv::Mat(expected_height_, width_, CV_8UC1);
-  thermal8_linear_ = cv::Mat(expected_height_, width_, CV_16UC1);
-  thermal8_norm_ = cv::Mat(expected_height_, width_, CV_8U, 1);
-  if (video_mode_ == Encoding::YUV && publish_color_) {
+  // Pre-allocate the copy-out Mats. The V4L2 buffer is handed back to the driver before anything is
+  // published, so no published image may be a view into it.
+  if (video_mode_ == Encoding::RAW16) {
+    thermal16_ = cv::Mat(expected_height_, width_, CV_16UC1);
+    if (zoom_enable_ && sensor_type_ == SensorTypes::Boson320) {
+      thermal16_zoom_ = cv::Mat(publishedSize(), CV_16UC1);
+    }
+  } else if (yuv_color_) {
     thermal_rgb_ = cv::Mat(height_, width_, CV_8UC3);
+  } else {
+    thermal8_ = cv::Mat(expected_height_, width_, CV_8UC1);
   }
 
   int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (ioctl(fd_, VIDIOC_STREAMON, &type) < 0) {
     return false;
   }
+
+  // The frame size is only known once the format has been negotiated.
+  applyPipelineConfig();
 
   return true;
 }
@@ -756,33 +1212,35 @@ void BosonCamera::captureAndPublish() {
   cv_bridge::CvImage cv_img;
   cv_img.header = header;
 
-  double max_temp, min_temp;
-  // ---------- Phase A: copy data out of the V4L2 buffer ----------
+  const bool zoom = zoom_enable_ && sensor_type_ == SensorTypes::Boson320 && video_mode_ == Encoding::RAW16;
+
+  // ---------- Phase A: copy the frame out of the V4L2 buffer ----------
+  // The buffer goes back to the driver in Phase B, so nothing published below may be a view into it.
+  cv::Mat frame;  // the CV_16UC1 frame handed to the processing stage, only used in RAW16 mode
   if (video_mode_ == Encoding::RAW16) {
-    cv::Mat thermal16(height_, width_, CV_16UC1, current_buffer, bytesperline_);
-    cv::Mat thermal16_cropped = thermal16(cv::Rect(0, 0, width_, expected_height_));
-    try {
-      agc(
-        thermal16_cropped, thermal8_linear_, thermal16_linear_, raw16_agc_low_pct_, raw16_agc_high_pct_,
-        &max_temp, &min_temp);
-    } catch (const std::range_error& e) {
-#ifndef ROS2
-      CRAS_ERROR_THROTTLE(1.0, "AGC error: %s", e.what());
-#else
-      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000, "AGC error: %s", e.what());
-#endif
-      return;
+    const cv::Mat raw(height_, width_, CV_16UC1, current_buffer, bytesperline_);
+    raw(cv::Rect(0, 0, width_, expected_height_)).copyTo(thermal16_);
+    frame = thermal16_;
+    if (zoom) {
+      cv::resize(thermal16_, thermal16_zoom_, publishedSize());
+      frame = thermal16_zoom_;
     }
-  } else {  // YUV
-    cv::Mat thermal_luma(height_ + height_ / 2, width_, CV_8UC1, current_buffer);
-    if (publish_color_) {
+    cv_img.image = frame;
+    cv_img.encoding = "mono16";
+  } else {  // YUV: the camera already ran its own AGC, so the frame is published as it comes out.
+    const cv::Mat thermal_luma(height_ + height_ / 2, width_, CV_8UC1, current_buffer);
+    if (yuv_color_) {
       if (is_yv12_) {
         cv::cvtColor(thermal_luma, thermal_rgb_, cv::COLOR_YUV2BGR_YV12);
       } else {
         cv::cvtColor(thermal_luma, thermal_rgb_, cv::COLOR_YUV2BGR_I420);
       }
+      cv_img.image = thermal_rgb_(cv::Rect(0, 0, width_, expected_height_));
+      cv_img.encoding = "bgr8";
     } else {
-      cv_img.image = thermal_luma(cv::Rect(0, 0, width_, expected_height_)).clone();
+      thermal_luma(cv::Rect(0, 0, width_, expected_height_)).copyTo(thermal8_);
+      cv_img.image = thermal8_;
+      cv_img.encoding = "mono8";
     }
   }
 
@@ -791,24 +1249,29 @@ void BosonCamera::captureAndPublish() {
     CRAS_ERROR("VIDIOC_QBUF error during recycle.");
   }
 
-  // ---------- Phase C: set encodings, zoom, publish ----------
+  // ---------- Phase C: run the processing stage ----------
+  // In YUV mode there is nothing to process: the camera produced the display image itself and only the
+  // raw frame is published.
+  PipelineOutputs outs;
+  bool processed = true;
   if (video_mode_ == Encoding::RAW16) {
-    if (zoom_enable_ && sensor_type_ == SensorTypes::Boson320) {
-      cv::resize(thermal16_linear_, thermal16_linear_zoom_, cv::Size(640, 512));
-      cv_img.image = thermal16_linear_zoom_;
-    } else {
-      cv_img.image = thermal16_linear_;
-    }
-    cv_img.encoding = "mono16";
-  } else {  // YUV
-    if (publish_color_) {
-      cv_img.image = thermal_rgb_(cv::Rect(0, 0, width_, expected_height_));
-      cv_img.encoding = "bgr8";
-    } else {
-      cv_img.encoding = "mono8";  // image already populated in Phase A
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    processed = pipeline_.process(frame, outs);
+  }
+  if (!processed) {
+#ifndef ROS2
+    CRAS_WARN_THROTTLE(
+      1.0, "The frame (%dx%d) does not match the configured image (%dx%d); skipping it.", frame.cols, frame.rows,
+      pipeline_.config().size.width, pipeline_.config().size.height);
+#else
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 1000, "The frame (%dx%d) does not match the configured image (%dx%d); skipping it.",
+      frame.cols, frame.rows, pipeline_.config().size.width, pipeline_.config().size.height);
+#endif
   }
 
+  // ---------- Phase D: publish ----------
+  // image_raw (together with camera_info) always carries data, even when the stage skipped the frame.
 #ifndef ROS2
   sensor_msgs::CameraInfoPtr ci(new CameraInfo());
 #else
@@ -833,87 +1296,56 @@ void BosonCamera::captureAndPublish() {
   image_pub_.publish(*cv_img.toImageMsg(), *ci);
 #endif
 
-  if (video_mode_ == Encoding::RAW16) {
-    // 8bit image
-    if (zoom_enable_ && sensor_type_ == SensorTypes::Boson320) {
-      cv::resize(thermal8_linear_, thermal8_linear_zoom_, cv::Size(640, 512));
-      cv_img.image = thermal8_linear_zoom_;
-    } else {
-      cv_img.image = thermal8_linear_;
-    }
+  if (video_mode_ != Encoding::RAW16 || !processed) {
+    return;
+  }
+
+  // The images below are buffers owned by the processing stage, so they are published while the stage is
+  // still locked against a concurrent reconfiguration.
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (outs.visual) {
+    cv_img.image = outs.visual8;
     cv_img.encoding = "mono8";
-    image_pub_8_.publish(cv_img.toImageMsg());
+    image_pub_visual_.publish(cv_img.toImageMsg());
+  }
 
-    // 8bit image (auto range)
-    double min, max;
-    minMaxLoc(thermal8_linear_, &min, &max);
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      double min_threshold = std::max(min - norm_margin_, 0.0);
-      double max_threshold = std::min(max + norm_margin_, 255.0);
-      if ((max_threshold - min_threshold) != 0) {
-        thermal8_norm_ = (thermal8_linear_ - min_threshold) * (255 - 0) / (max_threshold - min_threshold);
-      } else {
-        thermal8_norm_ = thermal8_linear_;
-      }
-    }
-    cv_img.image = thermal8_norm_;
-    cv_img.encoding = "mono8";
-    image_pub_8_norm_.publish(cv_img.toImageMsg());
+  if (outs.heatmap) {
+    cv_img.image = outs.heatmap8;
+    cv_img.encoding = "bgr8";
+    image_pub_heatmap_.publish(cv_img.toImageMsg());
+  }
 
-    if (publish_color_) {
-      cv::applyColorMap(cv_img.image, thermal8_heatmap_, cv::COLORMAP_JET);
-      // 8bit heatmap image
-      cv_img.image = thermal8_heatmap_;
-      cv_img.encoding = "bgr8";
-      image_pub_heatmap_.publish(cv_img.toImageMsg());
+  if (outs.temp) {
+    cv_img.image = outs.tempImage;
+    // The unit (and therefore the depth) the stage produced the image in. Both are only changed under the
+    // lock that is held here, so the encoding always matches the pixels.
+    cv_img.encoding = temp_encoding_;
+    image_pub_temp_.publish(cv_img.toImageMsg());
+  }
 
-      // put temperature info
-      thermal8_temp_ = thermal8_heatmap_.clone();
-      std::stringstream max_temp_ss, min_temp_ss, ptr_temp_ss;
-      max_temp_ss << std::fixed << std::setprecision(2) << max_temp;
-      min_temp_ss << std::fixed << std::setprecision(2) << min_temp;
-
-      std::string disp_max_temp = "Max: " + max_temp_ss.str() + " deg";
-      std::string disp_min_temp = "Min: " + min_temp_ss.str() + " deg";
-      cv::putText(
-        thermal8_temp_, disp_max_temp, cv::Point(15, 15), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 0), 1);
-      cv::putText(
-        thermal8_temp_, disp_min_temp, cv::Point(15, 30), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 0), 1);
-      // pointer temperature
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        temp_ptr_ = cv::Point(point_x_, point_y_);
-        ptr_temp_ = thermal16_linear_.at<uint16_t>(point_y_, point_x_) / 100.0 - 273.15;
-      }
-      ptr_temp_ss << std::fixed << std::setprecision(2) << ptr_temp_;
-      std::string disp_ptr_temp = "Ptr: " + ptr_temp_ss.str() + " deg";
-      cv::putText(
-        thermal8_temp_, disp_ptr_temp, cv::Point(15, 45), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 0), 1);
-      cv::circle(thermal8_temp_, temp_ptr_, 3, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
-      cv::circle(thermal8_temp_, temp_ptr_, 2, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
-
-      max_temp_msg_.header = header;
-      min_temp_msg_.header = header;
-      ptr_temp_msg_.header = header;
-      max_temp_msg_.temperature = max_temp;
-      min_temp_msg_.temperature = min_temp;
-      ptr_temp_msg_.temperature = ptr_temp_;
-
+  // The temperature topics exist exactly when the stage computes absolute values, and they report the
+  // bounds of the stretch the visible pixels were made from.
+  if (radiometric_ && temp_mode_ != TempMode::None) {
+    max_temp_msg_.header = header;
+    min_temp_msg_.header = header;
+    max_temp_msg_.temperature = outs.max_degC;
+    min_temp_msg_.temperature = outs.min_degC;
 #ifndef ROS2
-      max_temp_pub_.publish(max_temp_msg_);
-      min_temp_pub_.publish(min_temp_msg_);
+    max_temp_pub_.publish(max_temp_msg_);
+    min_temp_pub_.publish(min_temp_msg_);
+#else
+    max_temp_pub_->publish(max_temp_msg_);
+    min_temp_pub_->publish(min_temp_msg_);
+#endif
+    if (outs.probe_valid) {
+      ptr_temp_msg_.header = header;
+      ptr_temp_msg_.temperature = outs.probe_degC;
+#ifndef ROS2
       ptr_temp_pub_.publish(ptr_temp_msg_);
 #else
-      max_temp_pub_->publish(max_temp_msg_);
-      min_temp_pub_->publish(min_temp_msg_);
       ptr_temp_pub_->publish(ptr_temp_msg_);
 #endif
-
-      // 24bit image
-      cv_img.image = thermal8_temp_;
-      cv_img.encoding = "bgr8";
-      image_pub_temp_.publish(cv_img.toImageMsg());
     }
   }
 }

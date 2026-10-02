@@ -33,6 +33,8 @@
 #include <linux/videodev2.h>
 #include <opencv2/core/core.hpp>
 
+#include <flir_boson_usb/pipeline.hpp>
+
 #ifdef ROS2
 
 #include <camera_info_manager/camera_info_manager.hpp>
@@ -78,6 +80,13 @@ enum class SensorTypes {
   Boson640,
 };
 
+//! \brief A feature the driver can either detect by itself or be told about explicitly.
+enum class TriState {
+  Auto,
+  Yes,
+  No,
+};
+
 class BosonCamera
 #ifdef ROS2
     : public rclcpp::Node
@@ -95,17 +104,51 @@ public:
   ~BosonCamera() override;
 
 private:
-  void validateParams();
+  //! \brief Turn the parameter strings into the typed state. Returns false when a value cannot be used.
+  bool validateParams();
+  /**
+   * \brief Turn a palette name into the colormap the heatmap is painted with.
+   *
+   * The name is matched case-insensitively. The name and its typed form are updated together, and both are
+   * left untouched when the name is not a palette of the built OpenCV.
+   * \note The caller has to hold mutex_ when other threads can already read the parameters.
+   * \return False when the name is not a known palette.
+   */
+  bool setColormap(const std::string& name);
+  /**
+   * \brief Turn a name into the content stamped on the heatmap.
+   *
+   * The name is matched case-insensitively. The name and its typed form are updated together, and both are
+   * left untouched when the name is not a supported overlay content.
+   * \note The caller has to hold mutex_ when other threads can already read the parameters.
+   * \return False when the name is not a supported overlay content.
+   */
+  bool setOverlayMode(const std::string& name);
+  /**
+   * \brief Turn a unit name into the unit the absolute temperature image is carried in.
+   *
+   * The name is matched case-insensitively. The name, its typed form and the image encoding that goes with
+   * the unit are updated together, and all three are left untouched when the name is not a supported unit.
+   * \note The caller has to hold mutex_ when other threads can already read the parameters.
+   * \return False when the name is not a known unit.
+   */
+  bool setTempMode(const std::string& name);
   void init();
   bool openCamera();
   bool closeCamera();
   void captureAndPublish();
-  std::string detectSerial() const;
+  bool detectDevice();
+  void resolveRadiometric();
+  void createPublishers();
 
-  // Custom processing utilitiesC
-  void agc(
-      const cv::Mat& input_16, cv::Mat& output_8, cv::Mat& output_16, double clip_low_pct, double clip_high_pct,
-      double* max_temp, double* min_temp);
+  //! \brief Collect the current parameters into the configuration handed to the processing stage.
+  PipelineConfig pipelineConfig() const;
+  //! \brief Push the current parameters into the processing stage.
+  void applyPipelineConfig();
+  //! \brief The size of the published image, which is not the sensor size when zoom is enabled.
+  cv::Size publishedSize() const;
+  //! \brief Whether the temperature probe lies inside the published image.
+  bool probeInBounds() const;
 
 #ifdef ROS2
   rclcpp::TimerBase::SharedPtr init_timer_;
@@ -129,7 +172,7 @@ private:
   // ROS Node variables
   std::shared_ptr<camera_info_manager::CameraInfoManager> camera_info_;
   image_transport::CameraPublisher image_pub_;
-  image_transport::Publisher image_pub_8_, image_pub_heatmap_, image_pub_temp_, image_pub_8_norm_;
+  image_transport::Publisher image_pub_visual_, image_pub_heatmap_, image_pub_temp_;
 #ifndef ROS2
   ros::Publisher max_temp_pub_, min_temp_pub_, ptr_temp_pub_;
 #else
@@ -139,6 +182,7 @@ private:
   // Hardware V4L2 variables
   int32_t width_, height_, fd_;
   v4l2_capability cap_;
+  std::unique_ptr<BosonAPI> api_;
 
   struct V4L2Buffer {
     void* start;
@@ -147,32 +191,56 @@ private:
   std::vector<V4L2Buffer> buffers_;  // 4-buffer Ring Queue
   int expected_height_;
   size_t bytesperline_;
-  double max_temp_, min_temp_, ptr_temp_;
-
-  cv::Point temp_ptr_;
+  bool is_yv12_;
 
   // OpenCV Mats (Pre-allocated to prevent memory churn)
-  cv::Mat thermal16_, thermal16_linear_, thermal16_linear_zoom_, thermal8_linear_, thermal8_linear_zoom_;
-  cv::Mat thermal8_heatmap_, thermal8_temp_, thermal8_norm_, thermal_rgb_, hist_, thermal_rgb_zoom_, thermal_luma_;
+  cv::Mat thermal16_, thermal16_zoom_, thermal8_, thermal_rgb_;
+
+  // The image processing itself, which does not know anything about ROS.
+  Pipeline pipeline_;
 
   Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
 
   // Parameters
-  std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
+  std::string frame_id_, dev_path_, control_dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
+  std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, temp_mode_str_;
   double frame_rate_;
+  //! \brief The depth of the publisher queues (the keep_last history depth) of every published topic.
+  int queue_size_;
   Encoding video_mode_;
   bool zoom_enable_;
-  bool publish_color_;
-  bool is_yv12_;
-  double raw16_agc_low_pct_;
-  double raw16_agc_high_pct_;
+  bool yuv_color_;
   SensorTypes sensor_type_;
+  TriState radiometric_request_;
+  // Resolved from radiometric_request_ and the device identification once the camera is open.
+  bool radiometric_;
+  std::string device_id_, device_serial_;
+
+  // The typed form of the preset parameters above.
+  AgcMode agc_mode_;
+  HeatmapMode heatmap_mode_;
+  TempMode temp_mode_;
+  //! \brief The image encoding that goes with temp_mode_; the publishers have no access to the stage.
+  std::string temp_encoding_;
 
   // Dynamic parameters
-  int point_x_, point_y_;
-  int max_temp_limit_, min_temp_limit_;
-  double norm_margin_;
-  std::mutex mutex_;
+  //! \brief The temperature probe point, in pixels of the published image; the point of the ptr reading.
+  int temp_ptr_x_;
+  int temp_ptr_y_;
+  //! \brief The stretch bounds of the fixed-range AGC, in degrees Celsius.
+  int agc_fixed_max_temp_, agc_fixed_min_temp_;
+  bool agc_norm_;
+  //! \brief The clip percentiles of the auto-range AGC.
+  double agc_auto_low_pct_, agc_auto_high_pct_;
+  //! \brief How much wider the observed bounds are taken when agc_norm is on.
+  double agc_norm_margin_;
+  //! \brief The palette name and its typed form; setColormap() keeps them in sync.
+  std::string colormap_str_;
+  Colormap colormap_;
+  //! \brief The overlay content name and its typed form; setOverlayMode() keeps them in sync.
+  std::string overlay_mode_str_;
+  OverlayMode overlay_mode_;
+  mutable std::mutex mutex_;
 };
 
 }  // namespace flir_boson_usb
