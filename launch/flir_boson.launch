@@ -15,6 +15,7 @@ SPDX-FileCopyrightText: Czech Technical University in Prague
 
   <arg name="frame_id" default="boson_camera" doc="Frame used in header.frame_id"/>
   <arg name="dev" default="/dev/video0" doc="the linux file descriptor location for the camera"/>
+  <arg name="control_dev" default="" doc="The linux file descriptor location for the camera's control channel"/>
   <arg name="sensor_type" default="Boson_640" doc="Physical sensor array size. Boson_320 or Boson_640. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch."/>
   <arg name="frame_rate" default="30.0" doc="Frame rate of the camera. Only 9.0/30.0/60.0 supported."/>
   <arg name="queue_size" default="1" doc="Size of the publisher queues (the keep_last depth) of every topic the node publishes."/>
@@ -57,6 +58,7 @@ SPDX-FileCopyrightText: Czech Technical University in Prague
           args="$(arg nodelet_manager_arg) flir_boson_usb/BosonCamera $(arg nodelet_manager_name)" output="screen">
       <param name="frame_id" type="str" value="$(arg frame_id)"/>
       <param name="dev" type="str" value="$(arg dev)"/>
+      <param name="control_dev" type="str" value="$(arg control_dev)"/>
       <param name="frame_rate" type="double" value="$(arg frame_rate)"/>
       <param name="queue_size" type="int" value="$(arg queue_size)"/>
       <param name="video_mode" type="str" value="$(arg video_mode)"/>

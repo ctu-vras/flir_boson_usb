@@ -403,37 +403,6 @@ void drawOverlay(cv::Mat& image, const OverlayMode content, const double min_cou
   }
 }
 
-bool matchAnyPattern(const std::vector<std::string>& candidates, const std::vector<std::string>& patterns,
-    std::string& matchedPattern, std::string* invalidPattern) {
-  matchedPattern.clear();
-
-  for (const auto& pattern : patterns) {
-    if (pattern.empty()) {
-      continue;
-    }
-    std::regex regex;
-    try {
-      regex = std::regex(pattern, std::regex::ECMAScript);
-    } catch (const std::regex_error&) {
-      if (invalidPattern != nullptr) {
-        *invalidPattern = pattern;
-      }
-      continue;
-    }
-    for (const auto& candidate : candidates) {
-      if (candidate.empty()) {
-        continue;
-      }
-      if (std::regex_search(candidate, regex)) {
-        matchedPattern = pattern;
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
 void Pipeline::configure(const PipelineConfig& config) {
   // The temperature buffer depends on the unit depth as well as on the frame size.
   const bool reallocate = config_.size != config.size || config_.temp_mode != config.temp_mode;

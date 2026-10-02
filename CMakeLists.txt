@@ -3,24 +3,23 @@
 # SPDX-FileCopyrightText: 2018-2019 AutonomouStuff, LLC
 # SPDX-FileCopyrightText: Czech Technical University in Prague
 
-cmake_minimum_required(VERSION 3.10.2)
+cmake_minimum_required(VERSION 3.11.0)
 project(flir_boson_usb LANGUAGES CXX C)
 
 find_package(ament_cmake QUIET)
 #catkin_lint: ignore_once missing_required
 find_package(catkin QUIET)
 
+set(BOSON_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/download_boson_sdk-src)
+
 include(FetchContent)
 fetchcontent_declare(download_boson_sdk
   URL https://flir.netx.net/file/asset/46046/original/attachment
   DOWNLOAD_NAME boson_sdk.zip
-  DOWNLOAD_NO_EXTRACT true
 )
 fetchcontent_makeavailable(download_boson_sdk)
-set(BOSON_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/boson_sdk_src)
-file(ARCHIVE_EXTRACT INPUT ${download_boson_sdk_SOURCE_DIR}/boson_sdk.zip DESTINATION ${BOSON_SDK_DIR})
 
-set(BOSON_SDK_ROOT "${BOSON_SDK_DIR}/3.0 IDD & SDK/SDK_USER_PERMISSIONS/SDK_USER_PERMISSIONS")
+set(BOSON_SDK_ROOT "${BOSON_SDK_DIR}/SDK_USER_PERMISSIONS/SDK_USER_PERMISSIONS")
 set(BOSON_SDK_FSLP_DIR "${BOSON_SDK_ROOT}/FSLP_Files")
 set(BOSON_SDK_INCLUDE_DIRS "${BOSON_SDK_ROOT}/ClientFiles_C")
 get_filename_component(BOSON_SDK_LIBRARY "${BOSON_SDK_FSLP_DIR}/FSLP_64.so" ABSOLUTE)
@@ -35,6 +34,7 @@ set(BOSON_SDK_FSLP_LINK_DIR "${CMAKE_CURRENT_BINARY_DIR}/fslp_lib")
 file(MAKE_DIRECTORY "${BOSON_SDK_FSLP_LINK_DIR}")
 configure_file("${BOSON_SDK_LIBRARY}" "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}" COPYONLY)
 
+#catkin_lint: ignore_once order_violation
 add_library(FSLP_64 SHARED IMPORTED)
 set_target_properties(FSLP_64 PROPERTIES
   IMPORTED_LOCATION "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}"
@@ -42,16 +42,21 @@ set_target_properties(FSLP_64 PROPERTIES
 )
 
 file(GLOB BOSON_SDK_SOURCES "${BOSON_SDK_INCLUDE_DIRS}/*.c")
+list(FILTER BOSON_SDK_SOURCES EXCLUDE REGEX ".*I2C.*")
 set_property(SOURCE ${BOSON_SDK_SOURCES} PROPERTY LANGUAGE C)
+#catkin_lint: ignore_once order_violation
 add_library(boson_sdk SHARED ${BOSON_SDK_SOURCES})
+#catkin_lint: ignore_once external_interface_path missing_directory
 target_include_directories(boson_sdk PUBLIC "${BOSON_SDK_INCLUDE_DIRS}")
 target_link_libraries(boson_sdk PUBLIC FSLP_64)
 # libFSLP_64.so is installed next to this library, so look for it in the same directory.
 set_target_properties(boson_sdk PROPERTIES INSTALL_RPATH "$ORIGIN")
+target_compile_definitions(boson_sdk PUBLIC HAS_BOSON_SDK)
 
 message(STATUS "BOSON_SDK_INCLUDE_DIRS: ${BOSON_SDK_INCLUDE_DIRS}")
 message(STATUS "BOSON_SDK_LIBRARY: ${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}")
 
+#catkin_lint: ignore_once order_violation
 add_library(boson_api SHARED src/boson_api.cpp)
 target_link_libraries(boson_api PRIVATE boson_sdk)
 
@@ -83,6 +88,8 @@ if(catkin_FOUND)
     ${catkin_INCLUDE_DIRS}
   )
 
+  target_link_libraries(boson_api PUBLIC ${catkin_LIBRARIES})
+
   # The image processing does not depend on ROS, so it is a separate library that can be tested
   # without a running ROS and without a camera.
   add_library(flir_boson_pipeline src/pipeline.cpp)
@@ -93,7 +100,7 @@ if(catkin_FOUND)
   target_link_libraries(BosonCamera flir_boson_pipeline boson_api ${catkin_LIBRARIES})
   cras_node_from_nodelet(BosonCamera ${PROJECT_NAME}::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
 
-  install(TARGETS boson_api boson_sdk BosonCamera flir_boson_pipeline
+  install(TARGETS BosonCamera boson_api boson_sdk flir_boson_pipeline
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -162,6 +169,8 @@ elseif(ament_cmake_FOUND)
   find_package(sensor_msgs REQUIRED)
 
   include_directories(include)
+
+  target_link_libraries(boson_api PUBLIC cras_cpp_common::cras_expected)
 
   # The image processing does not depend on ROS, so it is a separate library that can be tested
   # without a running ROS and without a camera.

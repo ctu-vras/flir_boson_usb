@@ -94,6 +94,7 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `frame_id` | Frame used in `header.frame_id`. | `boson_camera` | |
 | `camera_info_url` | Camera calibration file URL (`file://` or `package://`). Empty publishes uncalibrated `CameraInfo`. See [Calibration](#calibration) below. | `""` | |
 | `dev` | The linux file descriptor location for the camera (e.g. `/dev/video4`). | `/dev/video0` | |
+| `control_dev` | The linux file descriptor location for the camera's control channel (e.g. `/dev/ttyACM0`). This gives access to camera control and detailed status. | `/dev/video0` | |
 | `sensor_type` | Physical sensor array size. `Boson_320` or `Boson_640`. The driver cross-checks this against the V4L2-negotiated width and refuses to start on a mismatch. Also used as camera name if it does not have a serial number. | `Boson_640` | |
 | `frame_rate` | Frame rate of the camera. Only 9.0/30.0/60.0 supported.| `30.0` | |
 | `queue_size` | Size of the publisher queues (the `keep_last` history depth) of every topic the node publishes. See [Notes on frame rate and performance](#notes-on-frame-rate-and-performance). | `1` | |
@@ -113,8 +114,7 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `temp_ptr_y` | Y coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `255` | ✔ |
 | `colormap` | Palette `image_heatmap` is painted with. `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`, `spring`, `cool`, `hsv`, `pink` and `hot` are always available; `parula` needs OpenCV 4.0 or newer, `magma`, `inferno`, `plasma`, `viridis` and `cividis` need 4.4, and `twilight`, `twilight_shifted`, `turbo` and `deepgreen` need 4.5. Case is ignored. A palette the built OpenCV does not have is not offered, and an unknown value keeps the palette used so far (at startup it stops the node). | `jet` | ✔ |
 | `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit as `32FC1`. `centi_c`, `centi_k`, `centi_f`: the same three units in hundredths, as `16SC1`, `16UC1` and `16SC1`. Only offered for radiometric cameras; see [Temperature units](#temperature-units). | `none` | |
-| `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: match the device identification against `radiometric_patterns`. `true`/`false`: override the detection. | `auto` | |
-| `radiometric_patterns` | Regular expressions tested against the device identification when `radiometric` is `auto`. An invalid pattern is reported and skipped. | `["[Rr]adiometric"]` | |
+| `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: query the device (fallback to `false`). `true`/`false`: override the detection. | `auto` | |
 
 Invalid combinations are rejected rather than silently corrected: an unknown `agc_mode`, `heatmap_mode`, `overlay_mode`,
 `temp_mode`, `colormap` or `radiometric` value stops the node at startup, and a `temp_ptr_x`/`temp_ptr_y`/temperature-limit

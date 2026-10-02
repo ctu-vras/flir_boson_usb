@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <functional>
 #include <glob.h>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <poll.h>
@@ -75,7 +76,7 @@ namespace flir_boson_usb {
 namespace {
 
 //! \brief Turn a fixed-size V4L2 string field into a std::string.
-std::string v4l2String(const __u8* field, const size_t max_len) {
+std::string v4l2String(const unsigned char* field, const size_t max_len) {
   const auto* text = reinterpret_cast<const char*>(field);
   return std::string(text, strnlen(text, max_len));
 }
@@ -190,6 +191,8 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
     "dev", "/dev/video0", paramDesc("the linux file descriptor location for the camera"));
+  control_dev_path_ = this->declare_parameter(
+    "control_dev", "", paramDesc("/dev/ttyACM0 or another serial device with the camera configuration interface"));
   sensor_type_str_ = this->declare_parameter(
     "sensor_type", "Boson_640",
     paramDesc(
@@ -294,11 +297,6 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
       "auto: match the device identification against radiometric_patterns. "
       "true/false: override the detection. Only radiometric cameras publish image_temp and the temperature topics.",
       "auto|true|false"));
-  radiometric_patterns_ = this->declare_parameter(
-    "radiometric_patterns", std::vector<std::string>({"[Rr]adiometric"}),
-    paramDesc(
-      "Regular expressions matched against the /dev/v4l/by-id device identifier and the V4L2 card, driver and bus "
-      "strings. An empty list, or no match, means the camera is not radiometric."));
 
   if (!this->validateParams()) {
     rclcpp::shutdown();
@@ -435,8 +433,6 @@ void BosonCamera::onInit() {
   pnh_.param<int>("agc_fixed_max_temp", agc_fixed_max_temp_, 50);
   pnh_.param<int>("agc_fixed_min_temp", agc_fixed_min_temp_, 20);
   pnh_.param<std::string>("radiometric", radiometric_str_, "auto");
-  pnh_.param<std::vector<std::string>>(
-    "radiometric_patterns", radiometric_patterns_, std::vector<std::string>({"[Rr]adiometric"}));
 
   if (!this->validateParams()) {
     ros::shutdown();
@@ -756,52 +752,26 @@ void BosonCamera::resolveRadiometric() {
     return;
   }
 
-  const std::vector<std::string> candidates{
-    device_id_, v4l2String(cap_.card, sizeof(cap_.card)), v4l2String(cap_.driver, sizeof(cap_.driver)),
-    v4l2String(cap_.bus_info, sizeof(cap_.bus_info))};
-
-  std::string matched;
-  std::string invalid;
-  radiometric_ = matchAnyPattern(candidates, radiometric_patterns_, matched, &invalid);
-
-  if (!invalid.empty()) {
-    CRAS_WARN("radiometric_patterns contains an invalid regular expression: %s", invalid.c_str());
+  if (api_ && *api_) {
+    if (const auto maybe_radiometric = api_->isRadiometric(); maybe_radiometric.has_value()) {
+      radiometric_ = *maybe_radiometric;
+      if (radiometric_) {
+        CRAS_INFO("Camera is radiometric according to its control channel.");
+      } else {
+        CRAS_INFO("Camera is not radiometric according to its control channel.");
+      }
+      return;
+    }
   }
 
-  if (radiometric_) {
-    CRAS_INFO(
-      "Camera identification '%s' matches radiometric pattern '%s'; publishing absolute temperature outputs.",
-      candidates[0].c_str(), matched.c_str());
-  } else {
-    CRAS_INFO(
-      "None of radiometric_patterns matched (device '%s', card '%s', driver '%s', bus '%s'); treating the camera as "
-      "non-radiometric.",
-      candidates[0].c_str(), candidates[1].c_str(), candidates[2].c_str(), candidates[3].c_str());
-  }
+  CRAS_WARN(
+    "Camera radiometric capability was set to be autodetected, but the detection via control channel failed. "
+    "Either provide a valid control device path or set radiometric parameter to Yes or No. Defaulting to No.");
+  radiometric_ = false;
 }
 
 void BosonCamera::init() {
   CRAS_INFO("Initializing FLIR Boson on %s", dev_path_.c_str());
-
-  try {
-    BosonAPI api("/dev/ttyACM1");
-    const auto fw = api.getCameraFirmwareVersion();
-    CRAS_WARN(
-      "PN: %s, SN: %u, FW: %u.%u.%u",
-      api.getCameraProductNumber().c_str(), api.getCameraSerialNumber(), fw[0], fw[1], fw[2]);
-    CRAS_WARN(
-      "Radio: %s, Uptime: %u, Temp: %f, Telem: %s",
-      api.isRadiometric() ? "Y" : "N", api.getUptime(), api.getSensorTemperature(),
-      api.isTelemetryEnabled() ? "Y" : "N");
-  } catch (const std::exception& e) {
-    CRAS_ERROR("Failed to initialize Boson API: %s", e.what());
-  }
-
-#ifdef ROS2
-  camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(this);
-#else
-  camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(nh_);
-#endif
 
   // The video mode and the sensor type were resolved by validateParams(), which also validated the probe
   // point against the published size that follows from them.
@@ -812,6 +782,76 @@ void BosonCamera::init() {
     CRAS_INFO("Camera serial was found. Setting camera name to: %s", device_serial_.c_str());
     cam_name = device_serial_;
   }
+
+  if (!control_dev_path_.empty()) {
+    CRAS_INFO("Trying to initialize control channel on %s", control_dev_path_.c_str());
+    try {
+      api_ = std::make_unique<BosonAPI>(control_dev_path_);
+    } catch (const std::exception& e) {
+      CRAS_ERROR("Failed to initialize Boson API: %s", e.what());
+    }
+
+    if (api_ && *api_) {
+      if (!device_serial_.empty()) {
+        if (const auto maybe_serial = api_->getCameraSerialNumber(); maybe_serial.has_value()) {
+          if (device_serial_ != cras::to_string(*maybe_serial)) {
+            CRAS_ERROR(
+              "Camera serial number mismatch: camere serial %s, control serial %u. Not using the control channel.",
+              device_serial_.c_str(), *maybe_serial);
+            api_.reset();
+          } else {
+            CRAS_INFO("Camera serial number matches control-channel serial.");
+          }
+        }
+      } else {
+        if (const auto maybe_serial = api_->getCameraSerialNumber(); maybe_serial.has_value()) {
+          cam_name = device_serial_ = cras::to_string(*maybe_serial);
+          CRAS_INFO("Camera serial was found via control channel. Setting camera name to: %s", device_serial_.c_str());
+        }
+      }
+    }
+
+    const auto bool_to_str =
+      [](const cras::expected<bool, std::string>& val) {
+        return val.has_value() ? (*val ? "Y" : "N") : "?";
+      };
+    const auto stamp_to_str =
+      [](const cras::expected<float, std::string>& val) {
+        return val.has_value() ? cras::to_string(*val) : "?";
+      };
+    constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
+
+    if (api_ && *api_) {
+      const auto fw = api_->getCameraFirmwareVersion().value_or(std::array<uint32_t, 3>{0, 0, 0});
+      std::array<cras::expected<float, std::string>, 4> timestamps;
+      bool has_timestamp {false};
+      for (int32_t i = 0; i < timestamps.size(); ++i) {
+        timestamps[i] = api_->getTimestamp(i);
+        has_timestamp |= timestamps[i].has_value();
+      }
+
+      CRAS_WARN(
+        "PN: %s, SN: %u, FW: %u.%u.%u",
+        api_->getCameraProductNumber().value_or("?").c_str(), api_->getCameraSerialNumber().value_or(-1),
+        fw[0], fw[1], fw[2]);
+      CRAS_WARN(
+        "Radiometry: %s, Uptime: %u, Chip Temperature [degC]: %f, Telemetry: %s",
+        bool_to_str(api_->isRadiometric()), api_->getUptime().value_or(0),
+        api_->getSensorTemperature().value_or(nan), bool_to_str(api_->isTelemetryEnabled()));
+      if (has_timestamp) {
+        CRAS_WARN(
+          "Timestamps: UARTINIT: %s, PIXELCLOCKINIT: %s, AUTHEVENT: %s, FIRSTVALIDIMAGE: %s",
+          stamp_to_str(timestamps[0]).c_str(), stamp_to_str(timestamps[1]).c_str(), stamp_to_str(timestamps[2]).c_str(),
+          stamp_to_str(timestamps[3]).c_str());
+      }
+    }
+  }
+
+#ifdef ROS2
+  camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(this);
+#else
+  camera_info_ = std::make_shared<camera_info_manager::CameraInfoManager>(nh_);
+#endif
 
   if (camera_info_url_.empty()) {
     CRAS_WARN(
@@ -840,6 +880,8 @@ void BosonCamera::init() {
       video_mode_str_.c_str());
   }
 
+  resolveRadiometric();
+
   if (!openCamera()) {
 #ifdef ROS2
     rclcpp::shutdown();
@@ -849,9 +891,6 @@ void BosonCamera::init() {
     return;
   }
 
-  // The radiometric state comes out of the V4L2 capability strings, so it can only be resolved once the
-  // camera is open -- and it has to be resolved before any publisher is created.
-  resolveRadiometric();
   // The stage needs both the frame size, which openCamera() determined, and the radiometric state.
   applyPipelineConfig();
   createPublishers();
@@ -949,6 +988,12 @@ bool BosonCamera::openCamera() {
   int requested_width = (sensor_type_ == SensorTypes::Boson640) ? 640 : 320;
   int requested_height = (sensor_type_ == SensorTypes::Boson640) ? 512 : 256;
 
+  // Request telemetry by trying to negotiate a larger height; if telemetry is not supported, this automatically falls
+  // back to the 2-row-smaller resolution.
+  if (api_ && api_->isTelemetryEnabled().value_or(false)) {
+    requested_height += 2;
+  }
+
   // 2. Set format parameters
   format.fmt.pix.pixelformat = video_mode_ == Encoding::RAW16 ? V4L2_PIX_FMT_Y16 : V4L2_PIX_FMT_YVU420;
   format.fmt.pix.width = requested_width;
@@ -972,6 +1017,10 @@ bool BosonCamera::openCamera() {
   // (This absorbs the telemetry offset seamlessly if it is turned on)
   width_ = format.fmt.pix.width;
   height_ = format.fmt.pix.height;
+
+  if (height_ != requested_height) {
+    CRAS_INFO("Extra telemetry rows are configured.")
+  }
 
   // YUV unpack path assumes tightly packed planes. Assert that here.
   if (video_mode_ == Encoding::YUV && format.fmt.pix.bytesperline != 0 &&

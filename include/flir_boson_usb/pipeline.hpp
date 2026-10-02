@@ -238,17 +238,6 @@ std::string formatOverlayValue(double counts, TempMode mode, bool radiometric);
 void drawOverlay(cv::Mat& image, OverlayMode content, double min_counts, double max_counts, double probe_counts,
     cv::Point probe, TempMode mode, bool radiometric);
 
-/**
- * \brief Check whether any of the candidate strings matches any of the regular expressions.
- * \param[in] candidates Strings to inspect (device identification, V4L2 card, driver, bus info).
- * \param[in] patterns Regular expressions; an empty list never matches.
- * \param[out] matchedPattern Set to the first pattern that matched (cleared when nothing matched).
- * \param[out] invalidPattern When not null and a pattern fails to compile, set to that pattern.
- * \return True when at least one candidate matched at least one pattern.
- */
-bool matchAnyPattern(const std::vector<std::string>& candidates, const std::vector<std::string>& patterns,
-    std::string& matchedPattern, std::string* invalidPattern = nullptr);
-
 //! \brief The palette names accepted by colormapFromString(), in the order of the Colormap values.
 const std::vector<std::string>& colormapNames();
 

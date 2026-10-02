@@ -34,7 +34,6 @@ using flir_boson_usb::degCToCounts;
 using flir_boson_usb::formatOverlayValue;
 using flir_boson_usb::HeatmapMode;
 using flir_boson_usb::kCountsPerDegC;
-using flir_boson_usb::matchAnyPattern;
 using flir_boson_usb::OverlayMode;
 using flir_boson_usb::overlayModeFromString;
 using flir_boson_usb::overlayModeNames;
@@ -809,57 +808,6 @@ TEST(Pipeline, ProbeOutsideThePublishedImageIsReported) {
       EXPECT_NEAR(countsToDegC(50000.0), out.probe_degC, kEps);
     }
   }
-}
-
-TEST(Pipeline, MatchAnyPatternReportsTheMatchedPattern) {
-  const std::vector<std::string> candidates{
-    "usb-FLIR_Boson_640_radiometric_1234-video-index0", "Boson640", "uvcvideo", "usb-0000:00:14.0-2"};
-  std::string matched;
-
-  // The by-id identifier is the first candidate and carries the pattern.
-  EXPECT_TRUE(matchAnyPattern(candidates, {"[Rr]adiometric"}, matched));
-  EXPECT_EQ("[Rr]adiometric", matched);
-
-  // A pattern that only matches one of the V4L2 strings is found as well, and the first pattern that
-  // matches anything is the one that gets reported.
-  EXPECT_TRUE(matchAnyPattern(candidates, {"^nomatch$", "^Boson640$"}, matched));
-  EXPECT_EQ("^Boson640$", matched);
-
-  EXPECT_TRUE(matchAnyPattern(candidates, {"video-index[0-9]+$"}, matched));
-  EXPECT_EQ("video-index[0-9]+$", matched);
-
-  // Nothing matches, so the caller has to treat the camera as non-radiometric.
-  EXPECT_FALSE(matchAnyPattern(candidates, {"^radiometric$"}, matched));
-  EXPECT_TRUE(matched.empty());
-
-  // An empty pattern list never matches, and neither does an empty candidate list.
-  EXPECT_FALSE(matchAnyPattern(candidates, {}, matched));
-  EXPECT_FALSE(matchAnyPattern({}, {"Boson"}, matched));
-
-  // Empty strings are placeholders, not catch-all patterns.
-  EXPECT_FALSE(matchAnyPattern(candidates, {""}, matched));
-  EXPECT_FALSE(matchAnyPattern({""}, {"Boson"}, matched));
-}
-
-TEST(Pipeline, MatchAnyPatternSurvivesAnInvalidRegex) {
-  const std::vector<std::string> candidates{"Boson radiometric 640"};
-  std::string matched;
-  std::string invalid;
-
-  // A broken pattern is reported and skipped, and the remaining patterns are still evaluated.
-  EXPECT_TRUE(matchAnyPattern(candidates, {"[unclosed(", "radiometric"}, matched, &invalid));
-  EXPECT_EQ("radiometric", matched);
-  EXPECT_EQ("[unclosed(", invalid);
-
-  // When every pattern is broken, the answer is simply "not radiometric".
-  matched.clear();
-  invalid.clear();
-  EXPECT_FALSE(matchAnyPattern(candidates, {"[unclosed(", "(?)"}, matched, &invalid));
-  EXPECT_TRUE(matched.empty());
-  EXPECT_FALSE(invalid.empty());
-
-  // The out-parameter is optional.
-  EXPECT_TRUE(matchAnyPattern(candidates, {"Boson"}, matched));
 }
 
 TEST(Pipeline, FrameWithUnexpectedSizeIsSkipped) {

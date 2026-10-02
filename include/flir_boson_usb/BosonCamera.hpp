@@ -182,6 +182,7 @@ private:
   // Hardware V4L2 variables
   int32_t width_, height_, fd_;
   v4l2_capability cap_;
+  std::unique_ptr<BosonAPI> api_;
 
   struct V4L2Buffer {
     void* start;
@@ -201,9 +202,8 @@ private:
   Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
 
   // Parameters
-  std::string frame_id_, dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
+  std::string frame_id_, dev_path_, control_dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
   std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, temp_mode_str_;
-  std::vector<std::string> radiometric_patterns_;
   double frame_rate_;
   //! \brief The depth of the publisher queues (the keep_last history depth) of every published topic.
   int queue_size_;
