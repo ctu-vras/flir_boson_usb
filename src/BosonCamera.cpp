@@ -990,8 +990,10 @@ bool BosonCamera::openCamera() {
 
   // Request telemetry by trying to negotiate a larger height; if telemetry is not supported, this automatically falls
   // back to the 2-row-smaller resolution.
+  bool telemetry_requested {false};
   if (api_ && api_->isTelemetryEnabled().value_or(false)) {
     requested_height += 2;
+    telemetry_requested = true;
   }
 
   // 2. Set format parameters
@@ -1018,7 +1020,7 @@ bool BosonCamera::openCamera() {
   width_ = format.fmt.pix.width;
   height_ = format.fmt.pix.height;
 
-  if (height_ != requested_height) {
+  if (telemetry_requested && height_ == requested_height) {
     CRAS_INFO("Extra telemetry rows are configured.")
   }
 
