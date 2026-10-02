@@ -18,10 +18,22 @@ int32_t FSLP_lookup_port_id(char*port_name, int32_t len);
 }
 #endif
 
+#include <cras_cpp_common/expected.hpp>
+#include <cras_cpp_common/string_utils.hpp>
 #include <flir_boson_usb/boson_api.hpp>
 
 std::string to_string(const uint8_t* value, const size_t len) {
-  return std::string{reinterpret_cast<const char*>(value), len};
+  std::string str{reinterpret_cast<const char*>(value), len};
+  size_t l = str.length();
+  while (l > 0) {
+    cras::strip(str);
+    cras::strip(str, '\0');
+    if (str.length() == l) {
+      break;
+    }
+    l = str.length();
+  }
+  return str;
 }
 
 namespace flir_boson_usb {
@@ -69,6 +81,7 @@ BosonAPI::operator bool() const {
 cras::expected<std::string, std::string> BosonAPI::getCameraProductNumber() const {
 #ifdef HAS_BOSON_SDK
   FLR_BOSON_PARTNUMBER_T pn;
+  memset(pn.value, 0, sizeof(pn.value));
   if (const auto res = bosonGetCameraPN(&pn); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get camera product number");
   }
