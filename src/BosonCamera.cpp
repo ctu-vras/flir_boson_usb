@@ -1021,7 +1021,7 @@ bool BosonCamera::openCamera() {
   height_ = format.fmt.pix.height;
 
   if (telemetry_requested && height_ == requested_height) {
-    CRAS_INFO("Extra telemetry rows are configured.")
+    CRAS_INFO("Extra telemetry rows are configured.");
   }
 
   // YUV unpack path assumes tightly packed planes. Assert that here.

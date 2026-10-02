@@ -6,6 +6,8 @@
 cmake_minimum_required(VERSION 3.11.0)
 project(flir_boson_usb LANGUAGES CXX C)
 
+set(CMAKE_CXX_STANDARD 17)
+
 find_package(ament_cmake QUIET)
 #catkin_lint: ignore_once missing_required
 find_package(catkin QUIET)
@@ -18,6 +20,9 @@ set(USE_BOSON_SDK OFF CACHE BOOL
 if(USE_BOSON_SDK)
   set(BOSON_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/download_boson_sdk-src)
 
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
   include(FetchContent)
   fetchcontent_declare(download_boson_sdk
     URL https://flir.netx.net/file/asset/46046/original/attachment
@@ -62,7 +67,12 @@ if(USE_BOSON_SDK)
   message(STATUS "BOSON_SDK_INCLUDE_DIRS: ${BOSON_SDK_INCLUDE_DIRS}")
   message(STATUS "BOSON_SDK_LIBRARY: ${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}")
 else()
+  #catkin_lint: ignore_once order_violation
   add_library(boson_sdk INTERFACE)
+  message(
+    "USE_BOSON_SDK is OFF, the driver will not have some extra functionality. Consider enabling it if you agree
+    with its terms."
+  )
 endif()
 
 #catkin_lint: ignore_once order_violation
@@ -109,16 +119,23 @@ if(catkin_FOUND)
   target_link_libraries(BosonCamera flir_boson_pipeline boson_api ${catkin_LIBRARIES})
   cras_node_from_nodelet(BosonCamera ${PROJECT_NAME}::BosonCamera OUTPUT_NAME ${PROJECT_NAME}_node)
 
-  install(TARGETS BosonCamera boson_api boson_sdk flir_boson_pipeline
+  install(TARGETS BosonCamera boson_api flir_boson_pipeline
     ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
   )
 
-  install(FILES "${BOSON_SDK_LIBRARY}"
-    DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-    RENAME ${BOSON_SDK_FSLP_INSTALLED_NAME}
-  )
+  if(USE_BOSON_SDK)
+    install(FILES "${BOSON_SDK_LIBRARY}"
+      DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+      RENAME ${BOSON_SDK_FSLP_INSTALLED_NAME}
+    )
+    install(TARGETS boson_sdk
+      ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+      LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+      RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    )
+  endif()
 
   install(DIRECTORY launch
     DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
