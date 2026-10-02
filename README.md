@@ -20,6 +20,10 @@ sudo usermod -aG video $USER
 # You may need to log out and log back in for the group change to take effect.
 ```
 
+The driver works best with Boson SDK. However, this library is not freely redistributable.
+This project can automatically download and compile it, but it needs your explicit consent.
+Set CMake variable `USE_BOSON_SDK` to `ON` to enable this functionality.
+
 ## Building
 
 ### ROS 2
@@ -27,7 +31,7 @@ sudo usermod -aG video $USER
 ```bash
 cd ~/ws
 rosdep install --from-paths src --ignore-src -r
-colcon build --packages-select flir_boson_usb --symlink-install
+colcon build --packages-select flir_boson_usb --symlink-install --cmake-args -DUSE_BOSON_SDK=ON
 source install/setup.bash
 ```
 
@@ -36,6 +40,7 @@ source install/setup.bash
 ```bash
 cd ~/ws
 rosdep install --from-paths src --ignore-src -r
+catkin config  --cmake-args -DUSE_BOSON_SDK=ON
 catkin build flir_boson_usb  # or catkin_make --only-pkg-with-deps flir_boson_usb
 source devel/setup.bash
 ```

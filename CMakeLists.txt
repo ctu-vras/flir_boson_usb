@@ -10,51 +10,60 @@ find_package(ament_cmake QUIET)
 #catkin_lint: ignore_once missing_required
 find_package(catkin QUIET)
 
-set(BOSON_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/download_boson_sdk-src)
-
-include(FetchContent)
-fetchcontent_declare(download_boson_sdk
-  URL https://flir.netx.net/file/asset/46046/original/attachment
-  DOWNLOAD_NAME boson_sdk.zip
-)
-fetchcontent_makeavailable(download_boson_sdk)
-
-set(BOSON_SDK_ROOT "${BOSON_SDK_DIR}/SDK_USER_PERMISSIONS/SDK_USER_PERMISSIONS")
-set(BOSON_SDK_FSLP_DIR "${BOSON_SDK_ROOT}/FSLP_Files")
-set(BOSON_SDK_INCLUDE_DIRS "${BOSON_SDK_ROOT}/ClientFiles_C")
-get_filename_component(BOSON_SDK_LIBRARY "${BOSON_SDK_FSLP_DIR}/FSLP_64.so" ABSOLUTE)
-
-# The precompiled FSLP_64.so has no SONAME. If it is linked by its full path, the linker stores
-# exactly that path as the DT_NEEDED entry of the depending library, which cannot be resolved at
-# run time any more (the path only exists inside the build tree). Link therefore through a copy
-# with a conventional lib-prefixed name and declare the library as having no SONAME, so that CMake
-# links it with -L<dir> -lFSLP_64 and the DT_NEEDED entry contains just libFSLP_64.so.
-set(BOSON_SDK_FSLP_INSTALLED_NAME "libFSLP_64.so")
-set(BOSON_SDK_FSLP_LINK_DIR "${CMAKE_CURRENT_BINARY_DIR}/fslp_lib")
-file(MAKE_DIRECTORY "${BOSON_SDK_FSLP_LINK_DIR}")
-configure_file("${BOSON_SDK_LIBRARY}" "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}" COPYONLY)
-
-#catkin_lint: ignore_once order_violation
-add_library(FSLP_64 SHARED IMPORTED)
-set_target_properties(FSLP_64 PROPERTIES
-  IMPORTED_LOCATION "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}"
-  IMPORTED_NO_SONAME TRUE
+set(USE_BOSON_SDK OFF CACHE BOOL
+  "Use the Boson SDK to access the camera. By turning on this variable, you agree to BOSON TOOLS and SDK License
+  Agreement.pdf."
 )
 
-file(GLOB BOSON_SDK_SOURCES "${BOSON_SDK_INCLUDE_DIRS}/*.c")
-list(FILTER BOSON_SDK_SOURCES EXCLUDE REGEX ".*I2C.*")
-set_property(SOURCE ${BOSON_SDK_SOURCES} PROPERTY LANGUAGE C)
-#catkin_lint: ignore_once order_violation
-add_library(boson_sdk SHARED ${BOSON_SDK_SOURCES})
-#catkin_lint: ignore_once external_interface_path missing_directory
-target_include_directories(boson_sdk PUBLIC "${BOSON_SDK_INCLUDE_DIRS}")
-target_link_libraries(boson_sdk PUBLIC FSLP_64)
-# libFSLP_64.so is installed next to this library, so look for it in the same directory.
-set_target_properties(boson_sdk PROPERTIES INSTALL_RPATH "$ORIGIN")
-target_compile_definitions(boson_sdk PUBLIC HAS_BOSON_SDK)
+if(USE_BOSON_SDK)
+  set(BOSON_SDK_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/download_boson_sdk-src)
 
-message(STATUS "BOSON_SDK_INCLUDE_DIRS: ${BOSON_SDK_INCLUDE_DIRS}")
-message(STATUS "BOSON_SDK_LIBRARY: ${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}")
+  include(FetchContent)
+  fetchcontent_declare(download_boson_sdk
+    URL https://flir.netx.net/file/asset/46046/original/attachment
+    DOWNLOAD_NAME boson_sdk.zip
+  )
+  fetchcontent_makeavailable(download_boson_sdk)
+
+  set(BOSON_SDK_ROOT "${BOSON_SDK_DIR}/SDK_USER_PERMISSIONS/SDK_USER_PERMISSIONS")
+  set(BOSON_SDK_FSLP_DIR "${BOSON_SDK_ROOT}/FSLP_Files")
+  set(BOSON_SDK_INCLUDE_DIRS "${BOSON_SDK_ROOT}/ClientFiles_C")
+  get_filename_component(BOSON_SDK_LIBRARY "${BOSON_SDK_FSLP_DIR}/FSLP_64.so" ABSOLUTE)
+
+  # The precompiled FSLP_64.so has no SONAME. If it is linked by its full path, the linker stores
+  # exactly that path as the DT_NEEDED entry of the depending library, which cannot be resolved at
+  # run time any more (the path only exists inside the build tree). Link therefore through a copy
+  # with a conventional lib-prefixed name and declare the library as having no SONAME, so that CMake
+  # links it with -L<dir> -lFSLP_64 and the DT_NEEDED entry contains just libFSLP_64.so.
+  set(BOSON_SDK_FSLP_INSTALLED_NAME "libFSLP_64.so")
+  set(BOSON_SDK_FSLP_LINK_DIR "${CMAKE_CURRENT_BINARY_DIR}/fslp_lib")
+  file(MAKE_DIRECTORY "${BOSON_SDK_FSLP_LINK_DIR}")
+  configure_file("${BOSON_SDK_LIBRARY}" "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}" COPYONLY)
+
+  #catkin_lint: ignore_once order_violation
+  add_library(FSLP_64 SHARED IMPORTED)
+  set_target_properties(FSLP_64 PROPERTIES
+    IMPORTED_LOCATION "${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}"
+    IMPORTED_NO_SONAME TRUE
+  )
+
+  file(GLOB BOSON_SDK_SOURCES "${BOSON_SDK_INCLUDE_DIRS}/*.c")
+  list(FILTER BOSON_SDK_SOURCES EXCLUDE REGEX ".*I2C.*")
+  set_property(SOURCE ${BOSON_SDK_SOURCES} PROPERTY LANGUAGE C)
+  #catkin_lint: ignore_once order_violation
+  add_library(boson_sdk SHARED ${BOSON_SDK_SOURCES})
+  #catkin_lint: ignore_once external_interface_path missing_directory
+  target_include_directories(boson_sdk PUBLIC "${BOSON_SDK_INCLUDE_DIRS}")
+  target_link_libraries(boson_sdk PUBLIC FSLP_64)
+  # libFSLP_64.so is installed next to this library, so look for it in the same directory.
+  set_target_properties(boson_sdk PROPERTIES INSTALL_RPATH "$ORIGIN")
+  target_compile_definitions(boson_sdk PUBLIC HAS_BOSON_SDK)
+
+  message(STATUS "BOSON_SDK_INCLUDE_DIRS: ${BOSON_SDK_INCLUDE_DIRS}")
+  message(STATUS "BOSON_SDK_LIBRARY: ${BOSON_SDK_FSLP_LINK_DIR}/${BOSON_SDK_FSLP_INSTALLED_NAME}")
+else()
+  add_library(boson_sdk INTERFACE)
+endif()
 
 #catkin_lint: ignore_once order_violation
 add_library(boson_api SHARED src/boson_api.cpp)
@@ -194,16 +203,24 @@ elseif(ament_cmake_FOUND)
   rclcpp_components_register_node(
     boson_camera_component PLUGIN "${PROJECT_NAME}::BosonCamera" EXECUTABLE boson_camera_node)
 
-  install(TARGETS boson_api boson_camera_component boson_sdk flir_boson_pipeline
+  install(TARGETS boson_api boson_camera_component flir_boson_pipeline
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
   )
 
-  install(FILES "${BOSON_SDK_LIBRARY}"
-    DESTINATION lib
-    RENAME ${BOSON_SDK_FSLP_INSTALLED_NAME}
-  )
+  if(USE_BOSON_SDK)
+    install(FILES "${BOSON_SDK_LIBRARY}"
+      DESTINATION lib
+      RENAME ${BOSON_SDK_FSLP_INSTALLED_NAME}
+    )
+
+    install(TARGETS boson_sdk
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib
+      RUNTIME DESTINATION bin
+    )
+  endif()
 
   install(DIRECTORY launch
     DESTINATION share/${PROJECT_NAME}
