@@ -20,21 +20,6 @@
 
 namespace flir_boson_usb {
 
-/**
- * \brief The radiometric unit assumption of the whole package lives here.
- *
- * A radiometric Boson puts the scene temperature into the 16-bit raw counts as hundredths of Kelvin, so
- * 29315 counts is 20 deg C. Nothing else in the package is allowed to divide or multiply by these numbers.
- */
-constexpr double kCountsPerDegC = 100.0;
-constexpr double kDegCOffset = 273.15;
-
-//! \brief Convert raw 16-bit counts to degrees Celsius.
-double countsToDegC(double counts);
-
-//! \brief Convert degrees Celsius to raw 16-bit counts (the inverse of countsToDegC()).
-double degCToCounts(double deg_c);
-
 //! \brief What lands on the visual topic.
 enum class AgcMode {
   None = 0,  //!< No visual output at all.
@@ -62,19 +47,23 @@ enum class OverlayMode {
 };
 
 /**
- * \brief The unit of the absolute temperature image, and therefore also its depth.
+ * \brief The unit of the temperature image.
  *
- * The numbering has to match the unit table in pipeline.cpp. The plain units are carried in 32-bit floats,
- * the centi- units in 16-bit integers, which halves the bandwidth at the price of a coarser resolution.
+ * The numbering has to match the unit table in pipeline.cpp. Every unit is carried in 32-bit floats, so the
+ * units differ only in the affine map they stand for, see tempAffine().
  */
 enum class TempMode {
-  None = 0,
-  DegC = 1,  //!< Degrees Celsius as a 32-bit float image.
-  DegK = 2,  //!< Kelvin as a 32-bit float image.
-  DegF = 3,  //!< Degrees Fahrenheit as a 32-bit float image.
-  CentiDegC = 4,  //!< Hundredths of degree Celsius as a signed 16-bit image.
-  CentiDegK = 5,  //!< Hundredths of Kelvin as an unsigned 16-bit image (the raw counts themselves).
-  CentiDegF = 6,  //!< Hundredths of degree Fahrenheit as a signed 16-bit image.
+  None = 0,  //!< No temperature output.
+  //! Raw counts brought to the high-gain scale (centiK in T-linear mode, otherwise unit-less).
+  Counts = 1,
+  DegC = 2,  //!< Degrees Celsius.
+  DegK = 3,  //!< Kelvin.
+  DegF = 4,  //!< Degrees Fahrenheit.
+};
+
+enum class GainMode {
+  Low = 0,  //!< Low gain (0-1310 K).
+  High = 1,  //!< High gain (0-655 K).
 };
 
 /**
@@ -111,8 +100,8 @@ enum class Colormap {
 
 //! \brief The stretch bounds, always in raw 16-bit counts.
 struct AgcBounds {
-  double min_counts = 0.0;
-  double max_counts = 0.0;
+  uint16_t min_counts = 0;
+  uint16_t max_counts = 0;
 };
 
 //! \brief The resolved state of the processing stage.
@@ -122,6 +111,7 @@ struct PipelineConfig {
   OverlayMode overlay_mode = OverlayMode::None;
   //! \brief The palette the heatmap is painted with; honoured when a heatmap is produced.
   Colormap colormap = Colormap::Jet;
+  GainMode gain_mode = GainMode::High;
   TempMode temp_mode = TempMode::None;
   bool radiometric = false;
 
@@ -130,8 +120,8 @@ struct PipelineConfig {
   double agc_auto_high_pct = 1.0;
 
   //! \brief Stretch bounds in degrees Celsius; honoured by AgcMode::FixedRange only.
-  double agc_fixed_min_degC = 20.0;
-  double agc_fixed_max_degC = 50.0;
+  float agc_fixed_min_degC = 20.0f;
+  float agc_fixed_max_degC = 50.0f;
 
   /**
    * \brief How much wider the observed bounds are taken when renormalising, in grey levels of the
@@ -154,11 +144,9 @@ struct PipelineConfig {
 struct PipelineOutputs {
   bool visual = false;  //!< Whether visual8 was produced.
   bool heatmap = false;  //!< Whether heatmap8 was produced.
-  bool temp = false;  //!< Whether tempImage was produced.
 
   cv::Mat visual8;  // CV_8UC1
   cv::Mat heatmap8;  // CV_8UC3
-  cv::Mat tempImage;  // the depth of tempDepth(config.temp_mode), in the configured temperature unit
 
   /**
    * \brief The bounds of the stretch that produced visual8, in degrees Celsius. When there is no
@@ -204,22 +192,20 @@ AgcBounds renormalize(const cv::Mat& raw16, const AgcBounds& base, double margin
  * \param[in] bounds The stretch bounds in counts.
  * \param[in,out] out8 The CV_8UC1 output (reallocated by OpenCV when needed).
  */
-void stretchTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds);
+void castTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds);
 
 /**
  * \brief Format a single reading stamped by the overlay.
  *
- * A radiometric camera carries absolute temperatures, so the reading is converted to the unit of \p mode
- * exactly the way the temperature image converts it (including the rounding and saturation of the 16-bit
- * units) and printed with the unit that goes with it: `20.00 deg C` for TempMode::DegC, or the integer
- * `2000 cdeg C` for TempMode::CentiDegC. When the counts cannot be turned into absolute temperatures -- a
- * non-radiometric camera, or a temperature mode with no unit at all -- the raw counts are printed instead,
- * e.g. `29315 counts`.
+ * The reading is converted from raw counts to the unit of \p temp_mode the same way the temperature image
+ * converts its pixels -- with the affine map of tempAffine() for the camera gain -- and printed with the
+ * unit that goes with it, e.g. `20.00 deg C` for TempMode::DegC. Counts have no fractional part in the
+ * image either, so they are printed as integers: `58630 counts` for TempMode::Counts.
  * \param[in] counts The reading in raw 16-bit counts.
- * \param[in] mode The unit the reading is printed in.
- * \param[in] radiometric Whether the counts carry absolute temperatures.
+ * \param[in] gain_mode The gain the counts were produced with; it decides the scale, see tempAffine().
+ * \param[in] temp_mode The unit the reading is printed in; TempMode::None prints an empty string.
  */
-std::string formatOverlayValue(double counts, TempMode mode, bool radiometric);
+std::string formatOverlayValue(uint16_t counts, GainMode gain_mode, TempMode temp_mode);
 
 /**
  * \brief Stamp the reading text and the probe marker selected by the overlay content onto a colour image.
@@ -232,11 +218,11 @@ std::string formatOverlayValue(double counts, TempMode mode, bool radiometric);
  * \param[in] max_counts The upper bound of the stretch, in raw 16-bit counts.
  * \param[in] probe_counts The reading at the probe, in raw 16-bit counts.
  * \param[in] probe The probe position in pixels of the image.
- * \param[in] mode The unit the readings are printed in; see formatOverlayValue().
- * \param[in] radiometric Whether the counts carry absolute temperatures.
+ * \param[in] gain_mode The gain the counts were produced with; see formatOverlayValue().
+ * \param[in] temp_mode The unit the readings are printed in; see formatOverlayValue().
  */
-void drawOverlay(cv::Mat& image, OverlayMode content, double min_counts, double max_counts, double probe_counts,
-    cv::Point probe, TempMode mode, bool radiometric);
+void drawOverlay(cv::Mat& image, OverlayMode content, uint16_t min_counts, uint16_t max_counts,
+    uint16_t probe_counts, cv::Point probe, GainMode gain_mode, TempMode temp_mode);
 
 //! \brief The palette names accepted by colormapFromString(), in the order of the Colormap values.
 const std::vector<std::string>& colormapNames();
@@ -252,6 +238,19 @@ bool colormapFromString(const std::string& name, Colormap& colormap);
 //! \brief The cv::applyColorMap() code of the given palette.
 int cvColormap(Colormap colormap);
 
+//! \brief The gain names accepted by gainModeFromString(), in the order of the GainMode values.
+const std::vector<std::string>& gainModeNames();
+
+/**
+ * \brief Turn a gain name into a GainMode.
+ * \param[in] name The gain name in lower case, i.e. one of the names listed by gainModeNames().
+ * \param[out] mode Set to the requested gain when the name is known.
+ * \return False when the name is not a supported gain.
+ */
+bool gainModeFromString(const std::string& name, GainMode& mode);
+
+std::string gainModeToString(GainMode mode);
+
 //! \brief The unit names accepted by tempModeFromString(), in the order of the TempMode values.
 const std::vector<std::string>& tempModeNames();
 
@@ -263,6 +262,8 @@ const std::vector<std::string>& tempModeNames();
  */
 bool tempModeFromString(const std::string& name, TempMode& mode);
 
+std::string tempModeToString(TempMode mode);
+
 //! \brief The OpenCV depth of the temperature image the given unit is carried in.
 int tempDepth(TempMode mode);
 
@@ -273,6 +274,21 @@ int tempDepth(TempMode mode);
  * plain string so that this module keeps containing no ROS type.
  */
 const char* tempEncoding(TempMode mode);
+
+/**
+ * \brief The affine map the temperature image of a unit is produced with.
+ *
+ * A temperature image is one rescaling of the raw counts, \c counts * scale + offset. The scale carries the
+ * gain the counts were made with, because low-gain counts tick twice as fast as the high-gain ones the units
+ * are defined with.
+ */
+struct TempAffine {
+  float scale;  //!< The scale applied to the raw counts.
+  float offset;  //!< The offset applied to the scaled raw counts.
+};
+
+//! \brief The affine map of the given units; see TempAffine.
+TempAffine tempAffine(GainMode gain_mode, TempMode temp_mode);
 
 //! \brief The overlay content names accepted by overlayModeFromString(), in the order of the OverlayMode values.
 const std::vector<std::string>& overlayModeNames();
@@ -293,7 +309,7 @@ bool overlayModeFromString(const std::string& name, OverlayMode& mode);
  */
 class Pipeline {
 public:
-  //! \brief Set up the stage. Reallocates the outputs when the frame size or the temperature unit changed.
+  //! \brief Set up the stage. Reallocates the outputs when the frame size changed.
   void configure(const PipelineConfig& config);
 
   const PipelineConfig& config() const {
@@ -313,8 +329,9 @@ private:
   PipelineConfig config_;
 
   // The reusable buffers. process() only hands the caller a shallow reference to them, so the memory
-  // is allocated once by configure() and then kept alive between frames.
-  cv::Mat hist_, visual8_, heatmap8_, temp_;
+  // is allocated once by configure() and then kept alive between frames. The temperature image is not
+  // among them: it is produced by RadiometricFilter, which owns its own buffer.
+  cv::Mat hist_, visual8_, heatmap8_;
 };
 
 }  // namespace flir_boson_usb

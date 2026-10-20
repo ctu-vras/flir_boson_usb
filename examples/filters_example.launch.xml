@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
+
+<!--
+ROS 2 launch file showing the radiometric conversion done by a filter chain of its own, outside the driver. The
+driver normally runs this filter internally (see the Filter chains section of the README), so this file
+exists to show what the filter looks like in a chain that someone else set up: to chain further stages onto it,
+or to convert an image_raw published by something else than this driver (e.g. a bag file reader).
+
+The driver is therefore started with its own temperature output switched off (temp_mode:=none), because the
+topic either carries the driver's conversion or the chain's, not both.
+
+This example depends on sensor_filters package which is not a declared dependency. Make sure to install it.
+-->
+
+<launch>
+  <arg name="namespace" default="flir_boson"/>
+  <arg name="dev" default="/dev/video0"/>
+  <arg name="control_dev" default=""/>
+  <arg name="sensor_type" default="Boson_640"/>
+  <arg name="frame_rate" default="30.0"/>
+  <!-- The unit the chain produces; see the temperature units section of the README. -->
+  <arg name="output_unit" default="counts"/>
+  <!-- The gain the camera runs with; it decides what the counts mean, see the same parameter of the driver. -->
+  <arg name="gain" default="high"/>
+  <!-- Whether the camera is radiometric. Passed to the driver only: the filter does not ask, a chain that
+       contains it expects radiometric counts. -->
+  <arg name="radiometric" default="auto"/>
+  <!-- Set to false to run only the chain, e.g. against an image_raw published elsewhere. -->
+  <arg name="start_driver" default="true"/>
+
+  <group if="$(var start_driver)">
+    <include file="$(find-pkg-share flir_boson_usb)/launch/flir_boson.launch.xml">
+      <arg name="namespace" value="$(var namespace)"/>
+      <arg name="dev" value="$(var dev)"/>
+      <arg name="control_dev" value="$(var control_dev)"/>
+      <arg name="sensor_type" value="$(var sensor_type)"/>
+      <arg name="frame_rate" value="$(var frame_rate)"/>
+      <arg name="video_mode" value="RAW16"/>
+      <arg name="radiometric" value="$(var radiometric)"/>
+      <!-- The chain below publishes image_temp; the driver must not do it as well. -->
+      <arg name="temp_mode" value="none"/>
+    </include>
+  </group>
+
+  <!-- The chain is an ordinary sensor_filters node; it subscribes to input and publishes output. -->
+  <node pkg="sensor_filters" exec="image_filter_chain" name="radiometric_chain"
+        namespace="$(var namespace)" output="screen">
+    <remap from="input" to="/$(var namespace)/image_raw"/>
+    <remap from="output" to="/$(var namespace)/image_temp"/>
+    <param from="$(dirname)/filters_example.yaml" allow_substs="true"/>
+  </node>
+</launch>

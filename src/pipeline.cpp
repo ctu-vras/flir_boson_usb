@@ -44,7 +44,7 @@
 namespace {
 
 //! \brief The number of histogram bins needed to cover every possible value of a 16-bit frame.
-constexpr int kHistSize = 65536;
+constexpr uint32_t kHistSize = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1;
 
 //! \brief One row of the palette table; an empty name means the built OpenCV does not have the palette.
 struct ColormapEntry {
@@ -95,9 +95,36 @@ std::vector<std::string> buildColormapNames() {
   return names;
 }
 
-//! \brief The Fahrenheit scale relative to Kelvin: one kelvin is 1.8 deg F, zero kelvin is -459.67 deg F.
-constexpr double kFahrenheitPerKelvin = 1.8;
-constexpr double kFahrenheitOffset = 459.67;
+struct GainTableEntry {
+  flir_boson_usb::GainMode gain_mode;
+  const char* name;
+  size_t multiplier;  //!< The gain multiplier value.
+};
+
+/**
+ * \brief The gain modes in the order of the GainMode values.
+ */
+const std::vector<GainTableEntry>& gainTable() {
+  static const std::vector<GainTableEntry> table = {
+    {flir_boson_usb::GainMode::Low, "low", 2},
+    {flir_boson_usb::GainMode::High, "high", 1},
+  };
+  return table;
+}
+
+const GainTableEntry& gainUnit(const flir_boson_usb::GainMode gain_mode) {
+  const auto& table = gainTable();
+  const auto index = static_cast<size_t>(gain_mode);
+  return index < table.size() ? table[index] : table[0];
+}
+
+std::vector<std::string> buildGainModeNames() {
+  std::vector<std::string> names;
+  for (const auto& unit : gainTable()) {
+    names.emplace_back(unit.name);
+  }
+  return names;
+}
 
 //! \brief One row of the temperature unit table.
 struct TempUnitEntry {
@@ -105,26 +132,22 @@ struct TempUnitEntry {
   const char* encoding;  //!< The image encoding the unit is carried in.
   const char* unit;  //!< The unit the overlay prints the values of this unit in.
   int depth;  //!< The OpenCV depth of the encoding.
-  double alpha;  //!< The scale applied to the raw counts.
-  double beta;  //!< The offset applied to the scaled raw counts.
+  float scale;  //!< The scale applied to Kelvins.
+  float offset;  //!< The offset applied to the scaled Kelvins.
 };
 
 /**
  * \brief The temperature units in the order of the TempMode values.
  *
- * The raw counts already are hundredths of Kelvin, so every unit is only a rescaling of them: the centi-
- * units differ from the plain ones by the depth they saturate into, and centi_k is the identity.
+ * The raw counts already are hundredths of Kelvin, so every unit is only a rescaling of them.
  */
 const std::vector<TempUnitEntry>& tempUnitTable() {
   static const std::vector<TempUnitEntry> table = {
-    {"none", "", "counts", CV_8UC1, 1.0, 0.0},  // no temperature image at all
-    {"c", "32FC1", "deg C", CV_32FC1, 1.0 / flir_boson_usb::kCountsPerDegC, -flir_boson_usb::kDegCOffset},
-    {"k", "32FC1", "deg K", CV_32FC1, 1.0 / flir_boson_usb::kCountsPerDegC, 0.0},
-    {"f", "32FC1", "deg F", CV_32FC1, kFahrenheitPerKelvin / flir_boson_usb::kCountsPerDegC, -kFahrenheitOffset},
-    {"centi_c", "16SC1", "cdeg C", CV_16SC1, 1.0, -flir_boson_usb::kDegCOffset * flir_boson_usb::kCountsPerDegC},
-    {"centi_k", "16UC1", "cdeg K", CV_16UC1, 1.0, 0.0},
-    {"centi_f", "16SC1", "cdeg F", CV_16SC1, kFahrenheitPerKelvin,
-      -kFahrenheitOffset * flir_boson_usb::kCountsPerDegC},
+    {"none", "", "", CV_32FC1, 0.0f, 0.0f},  // no temp output
+    {"counts", "32FC1", "counts", CV_32FC1, 1.0f, 0.0f},  // counts do not get scaled
+    {"c", "32FC1", "deg C", CV_32FC1, 1.0f, -273.15f},
+    {"k", "32FC1", "deg K", CV_32FC1, 1.0f, 0.0f},
+    {"f", "32FC1", "deg F", CV_32FC1, 1.8f, -459.67f},
   };
   return table;
 }
@@ -150,17 +173,30 @@ std::vector<std::string> buildTempModeNames() {
  * always the value the corresponding pixel of the temperature image carries. TempMode::None has no unit
  * of its own, so the counts pass through unchanged.
  */
-double countsToTempUnit(const double counts, const flir_boson_usb::TempMode mode) {
-  const auto& entry = tempUnit(mode);
-  const double value = counts * entry.alpha + entry.beta;
-  switch (entry.depth) {
-    case CV_16SC1:
-      return cv::saturate_cast<int16_t>(value);
-    case CV_16UC1:
-      return cv::saturate_cast<uint16_t>(value);
-    default:
-      return value;
+float countsToTempUnit(
+    const uint16_t counts, const flir_boson_usb::GainMode gain_mode, const flir_boson_usb::TempMode temp_mode) {
+  if (temp_mode == flir_boson_usb::TempMode::None) {
+    return std::numeric_limits<float>::quiet_NaN();
   }
+  const auto [scale, offset] = flir_boson_usb::tempAffine(gain_mode, temp_mode);
+  return counts * scale + offset;
+}
+
+/**
+ * \brief Convert raw counts to the unit of the given mode, the way the temperature image does it.
+ *
+ * The integer units are rounded and saturated into the range of their depth, so a converted reading is
+ * always the value the corresponding pixel of the temperature image carries. TempMode::None has no unit
+ * of its own, so the counts pass through unchanged.
+ */
+uint16_t tempUnitToCounts(
+    const float temp, const flir_boson_usb::GainMode gain_mode, const flir_boson_usb::TempMode temp_mode) {
+  if (temp_mode == flir_boson_usb::TempMode::None) {
+    return 0;
+  }
+  const auto [scale, offset] = flir_boson_usb::tempAffine(gain_mode, temp_mode);
+  const auto counts_float = std::max(0.0f, (temp - offset) / scale);
+  return static_cast<uint16_t>(std::min(counts_float, static_cast<float>(std::numeric_limits<uint16_t>::max())));
 }
 
 /**
@@ -185,14 +221,6 @@ std::vector<std::string> buildOverlayModeNames() {
 
 namespace flir_boson_usb {
 
-double countsToDegC(const double counts) {
-  return counts / kCountsPerDegC - kDegCOffset;
-}
-
-double degCToCounts(const double deg_c) {
-  return (deg_c + kDegCOffset) * kCountsPerDegC;
-}
-
 const std::vector<std::string>& colormapNames() {
   static const std::vector<std::string> names = buildColormapNames();
   return names;
@@ -215,6 +243,26 @@ int cvColormap(const Colormap colormap) {
   return index < table.size() ? table[index].code : cv::COLORMAP_JET;
 }
 
+const std::vector<std::string>& gainModeNames() {
+  static const std::vector<std::string> names = buildGainModeNames();
+  return names;
+}
+
+bool gainModeFromString(const std::string& name, GainMode& mode) {
+  const auto& table = gainTable();
+  for (size_t i = 0; i < table.size(); ++i) {
+    if (name == table[i].name) {
+      mode = static_cast<GainMode>(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string gainModeToString(const GainMode mode) {
+  return gainUnit(mode).name;
+}
+
 const std::vector<std::string>& tempModeNames() {
   static const std::vector<std::string> names = buildTempModeNames();
   return names;
@@ -231,12 +279,27 @@ bool tempModeFromString(const std::string& name, TempMode& mode) {
   return false;
 }
 
+std::string tempModeToString(const TempMode mode) {
+  return tempUnit(mode).name;
+}
+
 int tempDepth(const TempMode mode) {
   return tempUnit(mode).depth;
 }
 
 const char* tempEncoding(const TempMode mode) {
   return tempUnit(mode).encoding;
+}
+
+TempAffine tempAffine(const GainMode gain_mode, const TempMode temp_mode) {
+  const auto& gain_unit = gainUnit(gain_mode);
+  if (temp_mode == TempMode::None) {
+    return TempAffine{std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()};
+  } else if (temp_mode == TempMode::Counts) {
+    return TempAffine{1.0f * gain_unit.multiplier, 0.0f};
+  }
+  const auto& temp_unit = tempUnit(temp_mode);
+  return TempAffine{temp_unit.scale * gain_unit.multiplier / 100.0f, temp_unit.offset};
 }
 
 const std::vector<std::string>& overlayModeNames() {
@@ -259,7 +322,7 @@ void buildHistogram(const cv::Mat& raw16, cv::Mat& hist) {
   CV_Assert(raw16.type() == CV_16UC1);
 
   const int hist_size = kHistSize;
-  float range[] = {0, 65536};
+  float range[] = {0, hist_size};
   const float* hist_range = {range};
 
   // calcHist() reuses the memory of hist when the size and type already match.
@@ -272,16 +335,16 @@ AgcBounds percentileBounds(const cv::Mat& hist, const double total_pixels, const
 
   // A frame without pixels has nothing to clip; keep the full range rather than dividing by zero.
   if (total_pixels <= 0.0) {
-    return AgcBounds{0.0, 65535.0};
+    return AgcBounds{0, 65535};
   }
 
   const double clip_low_count = (clip_low_pct / 100.0) * total_pixels;
   const double clip_high_count = (clip_high_pct / 100.0) * total_pixels;
 
-  double min_val = 0.0;
-  double max_val = 65535.0;
+  uint16_t min_val = 0;
+  uint16_t max_val = 65535;
   // double prevents truncation on large sensors
-  double current_count = 0.0;
+  float current_count = 0.0f;
 
   // Find bottom percentile
   for (int i = 0; i < kHistSize; i++) {
@@ -304,9 +367,9 @@ AgcBounds percentileBounds(const cv::Mat& hist, const double total_pixels, const
 
   if (max_val <= min_val) {
     // Prevent division by zero, but stay inside the count range.
-    min_val = std::max(0.0, max_val - 1.0);
+    min_val = std::max(0, max_val - 1);
     if (max_val <= min_val) {
-      max_val = min_val + 1.0;
+      max_val = min_val + 1;
     }
   }
 
@@ -316,16 +379,18 @@ AgcBounds percentileBounds(const cv::Mat& hist, const double total_pixels, const
 AgcBounds renormalize(const cv::Mat& raw16, const AgcBounds& base, const double margin) {
   CV_Assert(raw16.type() == CV_16UC1);
 
-  double obs_min = 0.0;
-  double obs_max = 0.0;
-  cv::minMaxLoc(raw16, &obs_min, &obs_max);
+  double obs_min_dbl, obs_max_dbl;
+  cv::Point min_loc, max_loc;
+  cv::minMaxLoc(raw16, &obs_min_dbl, &obs_max_dbl, &min_loc, &max_loc);
+  const auto obs_min = raw16.at<uint16_t>(min_loc);
+  const auto obs_max = raw16.at<uint16_t>(max_loc);
 
   // The margin is given in grey levels of the active stretch, so it has to be expressed in counts.
-  const double margin_counts = (margin / 255.0) * (base.max_counts - base.min_counts);
+  const auto margin_counts = static_cast<uint16_t>(margin / 255.0 * (base.max_counts - base.min_counts));
 
   AgcBounds out;
-  out.min_counts = std::max(0.0, obs_min - margin_counts);
-  out.max_counts = std::min(65535.0, obs_max + margin_counts);
+  out.min_counts = obs_min >= margin_counts ? obs_min - margin_counts : 0;
+  out.max_counts = static_cast<uint32_t>(obs_max) + margin_counts < 65535 ? obs_max + margin_counts : 65535;
 
   if (out.max_counts <= out.min_counts) {
     // A uniform frame has no width to renormalise to; keep the incoming bounds.
@@ -335,7 +400,7 @@ AgcBounds renormalize(const cv::Mat& raw16, const AgcBounds& base, const double 
   return out;
 }
 
-void stretchTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds) {
+void castTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds) {
   CV_Assert(raw16.type() == CV_16UC1);
 
   const double width = bounds.max_counts - bounds.min_counts;
@@ -351,27 +416,30 @@ void stretchTo8Bit(const cv::Mat& raw16, cv::Mat& out8, const AgcBounds& bounds)
   raw16.convertTo(out8, CV_8UC1, scale, shift);
 }
 
-std::string formatOverlayValue(const double counts, const TempMode mode, const bool radiometric) {
-  // Without absolute temperatures there is nothing to convert to, and TempMode::None has no unit either;
-  // both cases print the raw counts of the frame.
-  const TempMode unit_mode = radiometric ? mode : TempMode::None;
-  const auto& entry = tempUnit(unit_mode);
-  const double value = countsToTempUnit(counts, unit_mode);
+std::string formatOverlayValue(
+    const uint16_t counts, const GainMode gain_mode, const TempMode temp_mode) {
+  if (temp_mode == TempMode::None) {
+    return "";
+  }
 
-  // The hundredths units are integers in the image, so they are printed as integers as well.
-  const bool integral = entry.depth != CV_32FC1 && entry.depth != CV_64FC1;
+  const double value = countsToTempUnit(counts, gain_mode, temp_mode);
+
+  // Counts are integers in the image, so they are printed as integers as well.
+  const bool integral = temp_mode == TempMode::Counts;
+
+  const auto unit = tempUnit(temp_mode).unit;
 
   char text[64];
   if (integral) {
-    std::snprintf(text, sizeof(text), "%.0f %s", value, entry.unit);
+    std::snprintf(text, sizeof(text), "%.0f %s", value, unit);
   } else {
-    std::snprintf(text, sizeof(text), "%.2f %s", value, entry.unit);
+    std::snprintf(text, sizeof(text), "%.2f %s", value, unit);
   }
   return std::string(text);
 }
 
-void drawOverlay(cv::Mat& image, const OverlayMode content, const double min_counts, const double max_counts,
-    const double probe_counts, cv::Point probe, const TempMode mode, const bool radiometric) {
+void drawOverlay(cv::Mat& image, const OverlayMode content, const uint16_t min_counts, const uint16_t max_counts,
+    const uint16_t probe_counts, const cv::Point probe, const GainMode gain_mode, const TempMode temp_mode) {
   CV_Assert(image.type() == CV_8UC3);
   if (content == OverlayMode::None) {
     return;
@@ -382,12 +450,14 @@ void drawOverlay(cv::Mat& image, const OverlayMode content, const double min_cou
 
   const int font = cv::FONT_HERSHEY_SIMPLEX;
   std::vector<std::string> texts;
-  if (want_bounds) {
-    texts.push_back("Max: " + formatOverlayValue(max_counts, mode, radiometric));
-    texts.push_back("Min: " + formatOverlayValue(min_counts, mode, radiometric));
-  }
-  if (want_probe) {
-    texts.push_back("Ptr: " + formatOverlayValue(probe_counts, mode, radiometric));
+  if (temp_mode != TempMode::None) {
+    if (want_bounds) {
+      texts.push_back("Max: " + formatOverlayValue(max_counts, gain_mode, temp_mode));
+      texts.push_back("Min: " + formatOverlayValue(min_counts, gain_mode, temp_mode));
+    }
+    if (want_probe) {
+      texts.push_back("Ptr: " + formatOverlayValue(probe_counts, gain_mode, temp_mode));
+    }
   }
   for (size_t line = 0; line < texts.size(); ++line) {
     // The palette paints whatever colour the value under the text happens to have, so the text is drawn
@@ -404,19 +474,13 @@ void drawOverlay(cv::Mat& image, const OverlayMode content, const double min_cou
 }
 
 void Pipeline::configure(const PipelineConfig& config) {
-  // The temperature buffer depends on the unit depth as well as on the frame size.
-  const bool reallocate = config_.size != config.size || config_.temp_mode != config.temp_mode;
+  const bool reallocate = config_.size != config.size;
   config_ = config;
 
   if (reallocate) {
     hist_ = cv::Mat(kHistSize, 1, CV_32FC1);
     visual8_ = cv::Mat(config_.size, CV_8UC1);
     heatmap8_ = cv::Mat(config_.size, CV_8UC3);
-    if (config_.temp_mode == TempMode::None) {
-      temp_.release();
-    } else {
-      temp_ = cv::Mat(config_.size, tempDepth(config_.temp_mode));
-    }
   }
 }
 
@@ -429,13 +493,12 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
 
   out.visual = false;
   out.heatmap = false;
-  out.temp = false;
   out.probe_valid = false;
 
   const bool want_visual = config_.agc_mode != AgcMode::None;
   const bool want_heatmap = want_visual && config_.heatmap_mode != HeatmapMode::None;
   const bool want_overlay = want_heatmap && config_.overlay_mode != OverlayMode::None;
-  const bool want_temp = config_.radiometric && config_.temp_mode != TempMode::None;
+  const bool want_temp = config_.temp_mode != TempMode::None;
 
   if (!want_visual && !want_temp) {
     // Nothing to compute: only the raw frame the node already has is of interest.
@@ -444,8 +507,10 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
 
   AgcBounds bounds;
   if (want_visual && config_.agc_mode == AgcMode::FixedRange) {
-    bounds.min_counts = degCToCounts(std::min(config_.agc_fixed_min_degC, config_.agc_fixed_max_degC));
-    bounds.max_counts = degCToCounts(std::max(config_.agc_fixed_min_degC, config_.agc_fixed_max_degC));
+    bounds.min_counts = tempUnitToCounts(
+      std::min(config_.agc_fixed_min_degC, config_.agc_fixed_max_degC), config_.gain_mode, TempMode::DegC);
+    bounds.max_counts = tempUnitToCounts(
+      std::max(config_.agc_fixed_min_degC, config_.agc_fixed_max_degC), config_.gain_mode, TempMode::DegC);
   } else {
     // Either the percentiles drive the stretch, or there is no stretch at all and the reported
     // readings are the only consumer of the scene extremes.
@@ -459,23 +524,23 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
   }
 
   // The reported bounds are exactly the bounds the visible pixels were made from.
-  out.min_degC = countsToDegC(bounds.min_counts);
-  out.max_degC = countsToDegC(bounds.max_counts);
+  out.min_degC = countsToTempUnit(bounds.min_counts, config_.gain_mode, TempMode::DegC);
+  out.max_degC = countsToTempUnit(bounds.max_counts, config_.gain_mode, TempMode::DegC);
 
   if (want_visual) {
-    stretchTo8Bit(raw16, visual8_, bounds);
+    castTo8Bit(raw16, visual8_, bounds);
     out.visual = true;
     out.visual8 = visual8_;
   }
 
   const bool probe_ok =
     config_.probe_x >= 0 && config_.probe_x < raw16.cols && config_.probe_y >= 0 && config_.probe_y < raw16.rows;
-  double probe_counts = 0.0;
+  uint16_t probe_counts = 0;
   if (want_temp || want_overlay) {
     out.probe_valid = probe_ok;
     if (probe_ok) {
       probe_counts = raw16.at<uint16_t>(config_.probe_y, config_.probe_x);
-      out.probe_degC = countsToDegC(probe_counts);
+      out.probe_degC = countsToTempUnit(probe_counts, config_.gain_mode, TempMode::DegC);
     }
   }
 
@@ -485,21 +550,13 @@ bool Pipeline::process(const cv::Mat& raw16, PipelineOutputs& out) {
     // stretch and is stamped whatever the probe point is.
     const bool needs_probe = config_.overlay_mode != OverlayMode::MinMax;
     if (want_overlay && (probe_ok || !needs_probe)) {
-      // The stamped readings are in the unit of the temperature image, or in counts when the camera
-      // cannot be turned into absolute temperatures.
+      // The stamped readings are in the unit of the temperature image, which is where the numbers
+      // published on the temperature topic come from as well.
       drawOverlay(heatmap8_, config_.overlay_mode, bounds.min_counts, bounds.max_counts, probe_counts,
-          cv::Point(config_.probe_x, config_.probe_y), config_.temp_mode, config_.radiometric);
+          cv::Point(config_.probe_x, config_.probe_y), config_.gain_mode, config_.temp_mode);
     }
     out.heatmap = true;
     out.heatmap8 = heatmap8_;
-  }
-
-  if (want_temp) {
-    // One saturating rescaling of the raw counts, straight into the buffer of the unit's depth.
-    const auto& unit = tempUnit(config_.temp_mode);
-    raw16.convertTo(temp_, unit.depth, unit.alpha, unit.beta);
-    out.temp = true;
-    out.tempImage = temp_;
   }
 
   return true;

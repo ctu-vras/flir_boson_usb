@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -28,12 +29,13 @@ using flir_boson_usb::buildHistogram;
 using flir_boson_usb::Colormap;
 using flir_boson_usb::colormapFromString;
 using flir_boson_usb::colormapNames;
-using flir_boson_usb::countsToDegC;
 using flir_boson_usb::cvColormap;
-using flir_boson_usb::degCToCounts;
 using flir_boson_usb::formatOverlayValue;
+using flir_boson_usb::GainMode;
+using flir_boson_usb::gainModeFromString;
+using flir_boson_usb::gainModeNames;
+using flir_boson_usb::gainModeToString;
 using flir_boson_usb::HeatmapMode;
-using flir_boson_usb::kCountsPerDegC;
 using flir_boson_usb::OverlayMode;
 using flir_boson_usb::overlayModeFromString;
 using flir_boson_usb::overlayModeNames;
@@ -42,6 +44,7 @@ using flir_boson_usb::Pipeline;
 using flir_boson_usb::PipelineConfig;
 using flir_boson_usb::PipelineOutputs;
 using flir_boson_usb::TempMode;
+using flir_boson_usb::tempAffine;
 using flir_boson_usb::tempDepth;
 using flir_boson_usb::tempEncoding;
 using flir_boson_usb::tempModeFromString;
@@ -50,8 +53,8 @@ using flir_boson_usb::tempModeNames;
 constexpr int kRows = 100;
 constexpr int kCols = 100;
 constexpr double kEps = 1e-6;
-// The plain temperature units are carried in 32-bit floats, which cannot resolve a hundredth of Kelvin
-// at the top of the temperature range.
+// The affine map of the unit table is stored in single precision, so a converted reading is only as exact
+// as a float can be at the temperature in question.
 constexpr double kFloatEps = 1e-4;
 
 PipelineConfig defaultConfig() {
@@ -88,6 +91,36 @@ cv::Mat outlierFrame() {
 }
 
 /**
+ * \brief The value the stage reports for a count value, i.e. the affine map of the unit table.
+ *
+ * The readings the stage hands back are always degrees Celsius, whatever unit the temperature image is
+ * produced in; this spells the expected number out of the same table the stage reads instead of repeating
+ * its constants here.
+ */
+double degC(const uint16_t counts, const GainMode gain_mode = GainMode::High) {
+  const auto affine = tempAffine(gain_mode, TempMode::DegC);
+  return counts * affine.scale + affine.offset;
+}
+
+//! \brief The count value a temperature configured in degrees Celsius stands for.
+uint16_t countsOf(const double deg_c, const GainMode gain_mode = GainMode::High) {
+  const auto affine = tempAffine(gain_mode, TempMode::DegC);
+  return static_cast<uint16_t>((deg_c - affine.offset) / affine.scale);
+}
+
+/**
+ * \brief The degrees Celsius a bound of the fixed stretch has to be set to to make the stage pick exactly
+ *        the given counts.
+ *
+ * The stage truncates the counts it computes out of the configured temperature, so a configured bound that
+ * is a whole number of counts lands half a count short of it. The middle of the count interval is the value
+ * that survives the truncation, and that is what the node has to hand over.
+ */
+double boundOf(const uint16_t counts, const GainMode gain_mode = GainMode::High) {
+  return degC(counts, gain_mode) + 0.5 * tempAffine(gain_mode, TempMode::DegC).scale;
+}
+
+/**
  * \brief Stamp the overlay of one configuration onto a copy of its heatmap.
  *
  * The heatmap the pipeline hands out is a reference to a buffer the stage reuses, so a configuration
@@ -102,29 +135,44 @@ cv::Mat stampHeatmap(const PipelineConfig& config, const cv::Mat& frame) {
   return out.heatmap8.clone();
 }
 
-//! \brief Read one pixel of a temperature image, whatever depth the configured unit is carried in.
-double tempPixel(const cv::Mat& temp, const int row, const int col) {
-  switch (temp.type()) {
-    case CV_32FC1:
-      return temp.at<float>(row, col);
-    case CV_16SC1:
-      return temp.at<int16_t>(row, col);
-    case CV_16UC1:
-      return temp.at<uint16_t>(row, col);
-    default:
-      return std::nan("");
-  }
-}
-
 }  // namespace
 
-TEST(Pipeline, CountsToDegcMatchesTheDocumentedFormula) {
-  EXPECT_NEAR(20.0, countsToDegC(29315.0), kEps);
-  EXPECT_NEAR(-273.15, countsToDegC(0.0), kEps);
-  EXPECT_NEAR(29315.0, degCToCounts(20.0), kEps);
-  for (const double degC : {-30.0, 0.0, 20.0, 65.5, 100.0}) {
-    EXPECT_NEAR(degC, countsToDegC(degCToCounts(degC)), kEps);
+/**
+ * \brief The affine map every consumer of the unit table builds its conversion from: the overlay text of
+ *        the stage and, through tempAffine(), also RadiometricFilter.
+ *
+ * High-gain counts are hundredths of Kelvin, so 29315 counts are 293.15 K. Low gain doubles the scale of
+ * every unit, because the very same counts then stand for twice the temperature span, while the
+ * Kelvin-based offsets of the units stay where they are.
+ */
+TEST(Pipeline, TempAffineIsTheGainCompensatedRescaling) {
+  EXPECT_NEAR(20.0, degC(29315), kFloatEps);
+  EXPECT_NEAR(29315.0, countsOf(20.0), kEps);
+  // A temperature only survives the trip through counts up to the resolution of a single count.
+  for (const double value : {-30.0, 0.0, 20.0, 65.5, 100.0}) {
+    EXPECT_NEAR(value, degC(countsOf(value)), tempAffine(GainMode::High, TempMode::DegC).scale);
   }
+
+  EXPECT_NEAR(0.01, tempAffine(GainMode::High, TempMode::DegC).scale, kFloatEps);
+  EXPECT_NEAR(0.02, tempAffine(GainMode::Low, TempMode::DegC).scale, kFloatEps);
+  EXPECT_NEAR(29315.0 * 0.02 - 273.15, degC(29315, GainMode::Low), kFloatEps);
+
+  // Counts are the one unit that is not a temperature, so they carry no offset -- only the gain.
+  EXPECT_NEAR(1.0, tempAffine(GainMode::High, TempMode::Counts).scale, kFloatEps);
+  EXPECT_NEAR(2.0, tempAffine(GainMode::Low, TempMode::Counts).scale, kFloatEps);
+  EXPECT_NEAR(0.0, tempAffine(GainMode::Low, TempMode::Counts).offset, kFloatEps);
+
+  EXPECT_NEAR(-273.15, tempAffine(GainMode::Low, TempMode::DegC).offset, kFloatEps);
+  EXPECT_NEAR(0.0, tempAffine(GainMode::Low, TempMode::DegK).offset, kFloatEps);
+  // Fahrenheit is 1.8 times Kelvin, and the table stores the scale that goes with counts, i.e. divided by
+  // the hundredths the counts are carried in.
+  EXPECT_NEAR(1.8 / 100.0, tempAffine(GainMode::High, TempMode::DegF).scale, kFloatEps);
+  EXPECT_NEAR(1.8 * 2 / 100.0, tempAffine(GainMode::Low, TempMode::DegF).scale, kFloatEps);
+  EXPECT_NEAR(-459.67, tempAffine(GainMode::High, TempMode::DegF).offset, kFloatEps);
+
+  // A unit that produces no image has no map at all.
+  EXPECT_TRUE(std::isnan(tempAffine(GainMode::High, TempMode::None).scale));
+  EXPECT_TRUE(std::isnan(tempAffine(GainMode::High, TempMode::None).offset));
 }
 
 TEST(Pipeline, PercentileBoundsClipTheOutliers) {
@@ -152,10 +200,14 @@ TEST(Pipeline, FixedRangeMapsTheLimitsToTheFullScale) {
   Pipeline pipeline;
   pipeline.configure(config);
 
+  // The two configured bounds are what the stage turns into counts, so those counts are what the reported
+  // temperatures describe -- not exactly 20 and 50 deg C, because the counts in between do not exist.
+  const uint16_t min_counts = countsOf(20.0);
+  const uint16_t max_counts = countsOf(50.0);
   cv::Mat frame = uniformFrame(0);
-  frame.at<uint16_t>(0, 0) = static_cast<uint16_t>(degCToCounts(20.0));
-  frame.at<uint16_t>(0, 1) = static_cast<uint16_t>(degCToCounts(50.0));
-  frame.at<uint16_t>(5, 5) = static_cast<uint16_t>(degCToCounts(35.0));
+  frame.at<uint16_t>(0, 0) = min_counts;
+  frame.at<uint16_t>(0, 1) = max_counts;
+  frame.at<uint16_t>(5, 5) = countsOf(35.0);
 
   PipelineOutputs out;
   ASSERT_TRUE(pipeline.process(frame, out));
@@ -165,8 +217,10 @@ TEST(Pipeline, FixedRangeMapsTheLimitsToTheFullScale) {
   // The middle of the range lands in the middle of the grey scale.
   EXPECT_GE(out.visual8.at<uint8_t>(5, 5), 127);
   EXPECT_LE(out.visual8.at<uint8_t>(5, 5), 128);
-  EXPECT_NEAR(20.0, out.min_degC, kEps);
-  EXPECT_NEAR(50.0, out.max_degC, kEps);
+  EXPECT_NEAR(degC(min_counts), out.min_degC, kFloatEps);
+  EXPECT_NEAR(degC(max_counts), out.max_degC, kFloatEps);
+  EXPECT_NEAR(20.0, out.min_degC, 0.02);
+  EXPECT_NEAR(50.0, out.max_degC, 0.02);
 }
 
 TEST(Pipeline, ReadingsAreTheBoundsTheVisiblePixelsWereMadeFrom) {
@@ -177,10 +231,11 @@ TEST(Pipeline, ReadingsAreTheBoundsTheVisiblePixelsWereMadeFrom) {
     config.agc_auto_low_pct = 0.0;
     config.agc_auto_high_pct = 0.0;
     // Make both modes describe the very same stretch so the two runs can share the assertions.
-    config.agc_fixed_min_degC = countsToDegC(500.0);
-    config.agc_fixed_max_degC = countsToDegC(65000.0);
-    config.radiometric = true;
-    config.temp_mode = TempMode::DegC;
+    config.agc_fixed_min_degC = boundOf(500);
+    config.agc_fixed_max_degC = boundOf(65000);
+    // The unit of the temperature image has nothing to say about the readings, which are always degrees
+    // Celsius; the unit only decides what the overlay text is printed in.
+    config.temp_mode = TempMode::DegK;
     config.heatmap_mode = HeatmapMode::Visual;
     config.overlay_mode = OverlayMode::MinMaxPtr;
     // The hottest pixel of the frame, so the probe and the bounds describe the same pixel.
@@ -198,165 +253,127 @@ TEST(Pipeline, ReadingsAreTheBoundsTheVisiblePixelsWereMadeFrom) {
     // and the reported bounds are exactly those two pixels.
     EXPECT_EQ(0, out.visual8.at<uint8_t>(0, 0));
     EXPECT_EQ(255, out.visual8.at<uint8_t>(kRows - 1, 0));
-    EXPECT_NEAR(countsToDegC(500.0), out.min_degC, kEps);
-    EXPECT_NEAR(countsToDegC(65000.0), out.max_degC, kEps);
+    EXPECT_NEAR(degC(500), out.min_degC, kFloatEps);
+    EXPECT_NEAR(degC(65000), out.max_degC, kFloatEps);
     // The probe is read from the raw counts, not from the stretched image.
-    EXPECT_NEAR(countsToDegC(65000.0), out.probe_degC, kEps);
+    EXPECT_NEAR(degC(65000), out.probe_degC, kFloatEps);
   }
 }
 
-TEST(Pipeline, TemperatureImageIsIndependentOfTheAgc) {
+/**
+ * \brief The readings are gain compensated, and so are the stretch bounds configured in degrees Celsius.
+ *
+ * The very same counts stand for half the temperature span at high gain, so one scene has to be reported
+ * with two different sets of temperatures depending on the gain the camera ran with -- while the picture
+ * itself, which is stretched in counts, stays the same.
+ */
+TEST(Pipeline, ReadingsFollowTheConfiguredGain) {
   const cv::Mat frame = outlierFrame();
-  for (const AgcMode mode : {AgcMode::FixedRange, AgcMode::AutoRange, AgcMode::None}) {
-    auto config = defaultConfig();
-    config.agc_mode = mode;
-    config.radiometric = true;
-    config.temp_mode = TempMode::DegC;
-    Pipeline pipeline;
-    pipeline.configure(config);
+  auto config = defaultConfig();
+  config.agc_mode = AgcMode::AutoRange;
+  config.agc_auto_low_pct = 0.0;
+  config.agc_auto_high_pct = 0.0;
 
-    PipelineOutputs out;
-    ASSERT_TRUE(pipeline.process(frame, out));
-    ASSERT_TRUE(out.temp);
-    ASSERT_EQ(CV_32FC1, out.tempImage.type());
-    EXPECT_NEAR(countsToDegC(500.0), out.tempImage.at<float>(0, 0), kFloatEps);
-    EXPECT_NEAR(countsToDegC(65000.0), out.tempImage.at<float>(kRows - 1, 0), kFloatEps);
-  }
+  config.gain_mode = GainMode::High;
+  Pipeline high;
+  high.configure(config);
+  PipelineOutputs high_out;
+  ASSERT_TRUE(high.process(frame, high_out));
+
+  config.gain_mode = GainMode::Low;
+  Pipeline low;
+  low.configure(config);
+  PipelineOutputs low_out;
+  ASSERT_TRUE(low.process(frame, low_out));
+
+  // The stretch is in counts, so the picture is identical whatever gain it is described with ...
+  EXPECT_EQ(0.0, cv::sum(high_out.visual8 != low_out.visual8)[0]);
+  // ... but the temperatures it stands for are exactly twice as far apart at low gain.
+  EXPECT_NEAR(degC(500, GainMode::Low), low_out.min_degC, kFloatEps);
+  EXPECT_NEAR(degC(65000, GainMode::Low), low_out.max_degC, kFloatEps);
+  EXPECT_NEAR(2.0 * (high_out.max_degC - high_out.min_degC), low_out.max_degC - low_out.min_degC, kFloatEps);
+}
+
+/**
+ * \brief A temperature mode with no visual output still gets the readings computed.
+ *
+ * The temperature image itself is produced by RadiometricFilter, but the scalar readings the node publishes
+ * come from this stage, and they are needed even when nobody asked for a picture.
+ */
+TEST(Pipeline, ReadingsAreProducedWithoutAVisualOutput) {
+  const cv::Mat frame = outlierFrame();
+  auto config = defaultConfig();
+  config.agc_mode = AgcMode::None;
+  config.agc_auto_low_pct = 0.0;
+  config.agc_auto_high_pct = 0.0;
+  config.temp_mode = TempMode::DegC;
+  config.probe_x = 0;
+  config.probe_y = kRows - 1;
+  Pipeline pipeline;
+  pipeline.configure(config);
+
+  PipelineOutputs out;
+  ASSERT_TRUE(pipeline.process(frame, out));
+  EXPECT_FALSE(out.visual);
+  EXPECT_FALSE(out.heatmap);
+  ASSERT_TRUE(out.probe_valid);
+  EXPECT_NEAR(degC(65000), out.probe_degC, kFloatEps);
+  // With no stretch to describe, the reported bounds are the extremes of the scene.
+  EXPECT_NEAR(degC(500), out.min_degC, kFloatEps);
+  EXPECT_NEAR(degC(65000), out.max_degC, kFloatEps);
 }
 
 TEST(Pipeline, TempModeNamesRoundTrip) {
   // The offered list is the parameter surface: everything the node accepts is listed, nothing else.
-  const std::vector<std::string> expected{
-    "none", "c", "k", "f", "centi_c", "centi_k", "centi_f"};
+  const std::vector<std::string> expected{"none", "counts", "c", "k", "f"};
   EXPECT_EQ(expected, tempModeNames());
 
   // Every offered name resolves back to the mode it was listed under.
-  const std::vector<TempMode> modes{
-    TempMode::None, TempMode::DegC, TempMode::DegK, TempMode::DegF, TempMode::CentiDegC, TempMode::CentiDegK,
-    TempMode::CentiDegF};
+  const std::vector<TempMode> modes{TempMode::None, TempMode::Counts, TempMode::DegC, TempMode::DegK, TempMode::DegF};
   ASSERT_EQ(expected.size(), modes.size());
   for (size_t i = 0; i < expected.size(); ++i) {
     TempMode mode;
     ASSERT_TRUE(tempModeFromString(expected[i], mode)) << expected[i];
     EXPECT_EQ(static_cast<int>(modes[i]), static_cast<int>(mode)) << expected[i];
+    EXPECT_EQ(expected[i], tempModeToString(mode)) << expected[i];
   }
 
   // An unknown name is refused and leaves the value alone. The node lower-cases the name before calling.
   TempMode mode = TempMode::DegK;
   EXPECT_FALSE(tempModeFromString("kelvin", mode));
-  EXPECT_FALSE(tempModeFromString("CENTI_C", mode));
+  EXPECT_FALSE(tempModeFromString("CENTI_K", mode));
   EXPECT_FALSE(tempModeFromString("", mode));
   EXPECT_EQ(static_cast<int>(TempMode::DegK), static_cast<int>(mode));
 }
 
-TEST(Pipeline, TemperatureUnitsCarryTheSameScene) {
-  // Two known values that every unit can carry: 10000 counts (100 K) in the top half, 30000 counts
-  // (300 K) in the bottom half. The extremes of the count range are covered by the saturation test.
-  constexpr double kColdCounts = 10000.0;
-  constexpr double kWarmCounts = 30000.0;
-  cv::Mat frame = uniformFrame(kColdCounts);
-  for (int row = kRows / 2; row < kRows; row++) {
-    for (int col = 0; col < kCols; col++) {
-      frame.at<uint16_t>(row, col) = kWarmCounts;
-    }
+TEST(Pipeline, GainModeNamesRoundTrip) {
+  const std::vector<std::string> expected{"low", "high"};
+  EXPECT_EQ(expected, gainModeNames());
+
+  for (const GainMode mode : {GainMode::Low, GainMode::High}) {
+    GainMode parsed;
+    ASSERT_TRUE(gainModeFromString(expected[static_cast<size_t>(mode)], parsed));
+    EXPECT_EQ(static_cast<int>(mode), static_cast<int>(parsed));
+    EXPECT_EQ(expected[static_cast<size_t>(mode)], gainModeToString(mode));
   }
 
-  struct ExpectedUnit {
-    TempMode mode;
-    int depth;
-    const char* encoding;
-    double cold;  // the value of the 10000-counts pixel
-    double warm;  // the value of the 30000-counts pixel
-  };
-  // The counts are hundredths of Kelvin; Fahrenheit is 1.8 times Kelvin, shifted by -459.67 deg F.
-  const std::vector<ExpectedUnit> cases{
-    {TempMode::DegC, CV_32FC1, "32FC1", kColdCounts / 100.0 - 273.15, kWarmCounts / 100.0 - 273.15},
-    {TempMode::DegK, CV_32FC1, "32FC1", kColdCounts / 100.0, kWarmCounts / 100.0},
-    {TempMode::DegF, CV_32FC1, "32FC1", kColdCounts / 100.0 * 1.8 - 459.67, kWarmCounts / 100.0 * 1.8 - 459.67},
-    {TempMode::CentiDegC, CV_16SC1, "16SC1", kColdCounts - 27315.0, kWarmCounts - 27315.0},
-    {TempMode::CentiDegK, CV_16UC1, "16UC1", kColdCounts, kWarmCounts},
-    // 100 K is -279.67 deg F and 300 K is 80.33 deg F (the same formula, in hundredths).
-    {TempMode::CentiDegF, CV_16SC1, "16SC1", -27967.0, 8033.0},
-  };
-
-  for (const auto& expected : cases) {
-    auto config = defaultConfig();
-    config.agc_mode = AgcMode::None;  // the unit has nothing to do with the stretch
-    config.radiometric = true;
-    config.temp_mode = expected.mode;
-    Pipeline pipeline;
-    pipeline.configure(config);
-
-    PipelineOutputs out;
-    ASSERT_TRUE(pipeline.process(frame, out));
-    ASSERT_TRUE(out.temp);
-    EXPECT_EQ(expected.depth, out.tempImage.type()) << expected.encoding;
-    EXPECT_EQ(expected.depth, tempDepth(expected.mode)) << expected.encoding;
-    EXPECT_STREQ(expected.encoding, tempEncoding(expected.mode));
-    EXPECT_EQ(cv::Size(kCols, kRows), out.tempImage.size());
-
-    EXPECT_NEAR(expected.cold, tempPixel(out.tempImage, 0, 0), kFloatEps) << expected.encoding;
-    EXPECT_NEAR(expected.warm, tempPixel(out.tempImage, kRows - 1, 0), kFloatEps) << expected.encoding;
-  }
+  GainMode untouched = GainMode::High;
+  EXPECT_FALSE(gainModeFromString("auto", untouched));
+  EXPECT_FALSE(gainModeFromString("HIGH", untouched));
+  EXPECT_FALSE(gainModeFromString("", untouched));
+  EXPECT_EQ(static_cast<int>(GainMode::High), static_cast<int>(untouched));
 }
 
-TEST(Pipeline, CentiUnitsSaturateInsteadOfWrapping) {
-  // The extremes of the count range, where the 16-bit units cannot carry the value. OpenCV saturates
-  // them into the corner of the range instead of wrapping around to the opposite sign.
-  struct Saturation {
-    TempMode mode;
-    double hot;  // the value of 65535 counts, i.e. 655.35 K
-    double cold;  // the value of 0 counts, i.e. -273.15 deg C
-  };
-  const std::vector<Saturation> cases{
-    {TempMode::CentiDegC, 32767.0, -27315.0},  // 382.20 deg C does not fit into a signed 16-bit value
-    {TempMode::CentiDegK, 65535.0, 0.0},  // the raw counts are already hundredths of Kelvin
-    {TempMode::CentiDegF, 32767.0, -32768.0},  // -459.67 deg F does not fit either
-  };
-
-  for (const auto& expected : cases) {
-    auto config = defaultConfig();
-    config.radiometric = true;
-    config.temp_mode = expected.mode;
-    Pipeline pipeline;
-    pipeline.configure(config);
-
-    PipelineOutputs hot_out;
-    ASSERT_TRUE(pipeline.process(uniformFrame(65535), hot_out));
-    EXPECT_DOUBLE_EQ(expected.hot, tempPixel(hot_out.tempImage, 0, 0)) << static_cast<int>(expected.mode);
-
-    PipelineOutputs cold_out;
-    ASSERT_TRUE(pipeline.process(uniformFrame(0), cold_out));
-    EXPECT_DOUBLE_EQ(expected.cold, tempPixel(cold_out.tempImage, 0, 0)) << static_cast<int>(expected.mode);
+TEST(Pipeline, GainAndUnitDecideTheEncodingTogether) {
+  // Every unit is a 32-bit float image now: the centi- units, which needed 16-bit integers, are gone and
+  // counts are carried in the same depth as the temperatures.
+  const std::vector<std::pair<TempMode, const char*>> units{
+    {TempMode::None, ""}, {TempMode::Counts, "32FC1"}, {TempMode::DegC, "32FC1"}, {TempMode::DegK, "32FC1"},
+    {TempMode::DegF, "32FC1"}};
+  for (const auto& unit : units) {
+    EXPECT_EQ(CV_32FC1, tempDepth(unit.first)) << unit.second;
+    EXPECT_STREQ(unit.second, tempEncoding(unit.first));
   }
-}
-
-TEST(Pipeline, ReconfiguringTheUnitChangesTheImageDepth) {
-  const cv::Mat frame = outlierFrame();
-  auto config = defaultConfig();
-  config.radiometric = true;
-  config.temp_mode = TempMode::DegC;
-  Pipeline pipeline;
-  pipeline.configure(config);
-
-  PipelineOutputs floats;
-  ASSERT_TRUE(pipeline.process(frame, floats));
-  ASSERT_EQ(CV_32FC1, floats.tempImage.type());
-
-  // The frame size stayed the same, so the buffer is only reallocated because of the new depth.
-  config.temp_mode = TempMode::CentiDegK;
-  pipeline.configure(config);
-  PipelineOutputs counts;
-  ASSERT_TRUE(pipeline.process(frame, counts));
-  ASSERT_EQ(CV_16UC1, counts.tempImage.type());
-  EXPECT_DOUBLE_EQ(10000.0, counts.tempImage.at<uint16_t>(0, kCols - 1));
-
-  // And back to a unit that needs no image at all.
-  config.temp_mode = TempMode::None;
-  pipeline.configure(config);
-  PipelineOutputs none;
-  ASSERT_TRUE(pipeline.process(frame, none));
-  EXPECT_FALSE(none.temp);
 }
 
 TEST(Pipeline, AgcNormRenormalizesTheRawCounts) {
@@ -374,7 +391,7 @@ TEST(Pipeline, AgcNormRenormalizesTheRawCounts) {
 
   // A pixel at the bottom percentile is black when the percentiles drive the stretch.
   EXPECT_EQ(0, plain_out.visual8.at<uint8_t>(0, 20));
-  EXPECT_NEAR(countsToDegC(10000.0), plain_out.min_degC, kEps);
+  EXPECT_NEAR(degC(10000), plain_out.min_degC, kFloatEps);
 
   // With agc_norm the same raw counts are stretched over the observed extremes widened by 20 grey levels
   // of the previous stretch (20 / 255 * 40000 counts), so the pixel is no longer at the very bottom.
@@ -390,8 +407,8 @@ TEST(Pipeline, AgcNormRenormalizesTheRawCounts) {
   EXPECT_GT(norm_out.visual8.at<uint8_t>(0, 20), plain_out.visual8.at<uint8_t>(0, 20));
   // The renormalisation is driven by the raw frame extremes, not by the saturated 8-bit image. The
   // widened bounds reach past both ends of the 16-bit count range and are clipped to it.
-  EXPECT_NEAR(countsToDegC(0.0), norm_out.min_degC, kEps);
-  EXPECT_NEAR(countsToDegC(65535.0), norm_out.max_degC, kEps);
+  EXPECT_NEAR(degC(0), norm_out.min_degC, kFloatEps);
+  EXPECT_NEAR(degC(65535), norm_out.max_degC, kFloatEps);
 }
 
 TEST(Pipeline, UniformFrameStaysDefined) {
@@ -431,7 +448,9 @@ TEST(Pipeline, DegeneratePercentileClipStaysWithinTheCountRange) {
   ASSERT_TRUE(out.visual);
   EXPECT_EQ(CV_8UC1, out.visual8.type());
   EXPECT_GT(out.max_degC, out.min_degC);
-  EXPECT_NEAR(1.0 / kCountsPerDegC, out.max_degC - out.min_degC, kEps);
+  // The stretch the pipeline invents is exactly one count wide, so the two reported temperatures are one
+  // count apart in the unit of the configured gain.
+  EXPECT_NEAR(tempAffine(GainMode::High, TempMode::DegC).scale, out.max_degC - out.min_degC, kFloatEps);
 }
 
 TEST(Pipeline, NarrowAndDegenerateFixedRangeStayFinite) {
@@ -469,7 +488,6 @@ TEST(Pipeline, DisabledOutputsAreNotProduced) {
   config.heatmap_mode = HeatmapMode::Visual;
   config.overlay_mode = OverlayMode::MinMaxPtr;
   config.temp_mode = TempMode::DegC;
-  config.radiometric = false;
   Pipeline pipeline;
   pipeline.configure(config);
 
@@ -477,10 +495,8 @@ TEST(Pipeline, DisabledOutputsAreNotProduced) {
   ASSERT_TRUE(pipeline.process(frame, out));
   EXPECT_FALSE(out.visual);
   EXPECT_FALSE(out.heatmap);
-  EXPECT_FALSE(out.temp);
   EXPECT_TRUE(out.visual8.empty());
   EXPECT_TRUE(out.heatmap8.empty());
-  EXPECT_TRUE(out.tempImage.empty());
 
   // The heatmap and the overlay hang off the visual output, so they need it to be enabled as well.
   config.agc_mode = AgcMode::AutoRange;
@@ -491,20 +507,6 @@ TEST(Pipeline, DisabledOutputsAreNotProduced) {
   EXPECT_TRUE(no_heatmap.visual);
   EXPECT_FALSE(no_heatmap.heatmap);
   EXPECT_TRUE(no_heatmap.heatmap8.empty());
-
-  // The metric image is a radiometric feature and is never produced for a non-radiometric camera.
-  config.temp_mode = TempMode::DegC;
-  config.radiometric = false;
-  pipeline.configure(config);
-  PipelineOutputs not_radiometric;
-  ASSERT_TRUE(pipeline.process(frame, not_radiometric));
-  EXPECT_FALSE(not_radiometric.temp);
-
-  config.radiometric = true;
-  pipeline.configure(config);
-  PipelineOutputs radiometric;
-  ASSERT_TRUE(pipeline.process(frame, radiometric));
-  EXPECT_TRUE(radiometric.temp);
 }
 
 TEST(Pipeline, OverlayIsStampedOnTheHeatmap) {
@@ -565,7 +567,6 @@ TEST(Pipeline, OverlayContentSelectsWhatIsStamped) {
   config.agc_mode = AgcMode::AutoRange;
   config.heatmap_mode = HeatmapMode::Visual;
   config.temp_mode = TempMode::DegC;
-  config.radiometric = true;
   config.probe_x = 60;
   config.probe_y = 60;
 
@@ -604,7 +605,6 @@ TEST(Pipeline, BoundsOverlayIsStampedWithoutAProbe) {
   config.agc_mode = AgcMode::AutoRange;
   config.heatmap_mode = HeatmapMode::Visual;
   config.temp_mode = TempMode::DegC;
-  config.radiometric = true;
   // The probe is not in the published image, so there is no probe reading to print.
   config.probe_x = -1;
   config.probe_y = -1;
@@ -625,69 +625,36 @@ TEST(Pipeline, BoundsOverlayIsStampedWithoutAProbe) {
   EXPECT_EQ(0.0, cv::sum(min_max_ptr != bare)[0]);
 }
 
+/**
+ * \brief The text stamped on the heatmap is the very number the temperature image carries.
+ *
+ * 30000 counts are 300 K at high gain, i.e. 26.85 deg C and 80.33 deg F. At low gain the same counts are
+ * twice the span, i.e. 600 K. Counts are printed without decimals, because that is what they are.
+ */
 TEST(Pipeline, OverlayValueIsPrintedInTheConfiguredUnit) {
-  // 30000 counts is 300 K, i.e. 26.85 deg C and 80.33 deg F; the centi- units are the same values in
-  // hundredths, which is what the corresponding pixel of image_temp carries.
-  constexpr double kCounts = 30000.0;
   struct PrintedValue {
     TempMode mode;
-    const char* text;
+    const char* high_gain;
+    const char* low_gain;
   };
   const std::vector<PrintedValue> cases{
-    {TempMode::None, "30000 counts"},  // no unit at all, so the counts the frame really carries
-    {TempMode::DegC, "26.85 deg C"},
-    {TempMode::DegK, "300.00 deg K"},
-    {TempMode::DegF, "80.33 deg F"},
-    {TempMode::CentiDegC, "2685 cdeg C"},
-    {TempMode::CentiDegK, "30000 cdeg K"},
-    {TempMode::CentiDegF, "8033 cdeg F"},
+    {TempMode::None, "", ""},  // no unit at all, so nothing is stamped
+    {TempMode::Counts, "30000 counts", "60000 counts"},
+    {TempMode::DegC, "26.85 deg C", "326.85 deg C"},
+    {TempMode::DegK, "300.00 deg K", "600.00 deg K"},
+    {TempMode::DegF, "80.33 deg F", "620.33 deg F"},
   };
   for (const auto& expected : cases) {
-    EXPECT_EQ(expected.text, formatOverlayValue(kCounts, expected.mode, true)) << static_cast<int>(expected.mode);
+    EXPECT_EQ(expected.high_gain, formatOverlayValue(30000, GainMode::High, expected.mode))
+      << static_cast<int>(expected.mode);
+    EXPECT_EQ(expected.low_gain, formatOverlayValue(30000, GainMode::Low, expected.mode))
+      << static_cast<int>(expected.mode);
   }
-}
 
-TEST(Pipeline, NonRadiometricOverlayShowsTheRawCounts) {
-  // A non-radiometric camera cannot be turned into absolute temperatures, so whatever unit was
-  // configured, the overlay prints the 16-bit counts it actually has, without decimals.
-  for (const TempMode mode : {TempMode::None, TempMode::DegC, TempMode::CentiDegK}) {
-    EXPECT_EQ("30000 counts", formatOverlayValue(30000.0, mode, false)) << static_cast<int>(mode);
-  }
-  EXPECT_EQ("0 counts", formatOverlayValue(0.0, TempMode::DegC, false));
-  EXPECT_EQ("65535 counts", formatOverlayValue(65535.0, TempMode::DegF, false));
-}
-
-TEST(Pipeline, OverlayValueSaturatesLikeTheTemperatureImage) {
-  // 65535 counts is 655.35 K, which the signed hundredths units cannot carry. The printed value is the
-  // saturated value the pixel of image_temp holds, not the temperature that does not fit into it.
-  const cv::Mat frame = uniformFrame(65535);
-  struct Saturation {
-    TempMode mode;
-    const char* text;
-  };
-  const std::vector<Saturation> cases{
-    {TempMode::CentiDegC, "32767 cdeg C"},
-    {TempMode::CentiDegF, "32767 cdeg F"},
-    {TempMode::CentiDegK, "65535 cdeg K"},
-    {TempMode::DegK, "655.35 deg K"},
-  };
-
-  for (const auto& expected : cases) {
-    auto config = defaultConfig();
-    config.agc_mode = AgcMode::None;
-    config.radiometric = true;
-    config.temp_mode = expected.mode;
-    Pipeline pipeline;
-    pipeline.configure(config);
-
-    PipelineOutputs out;
-    ASSERT_TRUE(pipeline.process(frame, out));
-    ASSERT_TRUE(out.temp);
-    EXPECT_EQ(expected.text, formatOverlayValue(65535.0, expected.mode, true)) << static_cast<int>(expected.mode);
-    if (expected.mode == TempMode::CentiDegC || expected.mode == TempMode::CentiDegF) {
-      EXPECT_EQ(32767, out.tempImage.at<int16_t>(0, 0)) << static_cast<int>(expected.mode);
-    }
-  }
+  // The whole count range survives in the float units, so the extremes are printed as they are.
+  EXPECT_EQ("-273.15 deg C", formatOverlayValue(0, GainMode::High, TempMode::DegC));
+  EXPECT_EQ("655.35 deg K", formatOverlayValue(65535, GainMode::High, TempMode::DegK));
+  EXPECT_EQ("0 counts", formatOverlayValue(0, GainMode::Low, TempMode::Counts));
 }
 
 TEST(Pipeline, OverlayTextFollowsTheConfiguredUnit) {
@@ -703,34 +670,35 @@ TEST(Pipeline, OverlayTextFollowsTheConfiguredUnit) {
 
   auto unit_config = config;
   unit_config.temp_mode = TempMode::DegC;
-  unit_config.radiometric = true;
   const cv::Mat degc = stampHeatmap(unit_config, frame);
   unit_config.temp_mode = TempMode::DegK;
   const cv::Mat degk = stampHeatmap(unit_config, frame);
-  unit_config.temp_mode = TempMode::DegC;
-  unit_config.radiometric = false;
+  unit_config.temp_mode = TempMode::Counts;
   const cv::Mat counts = stampHeatmap(unit_config, frame);
+  unit_config.temp_mode = TempMode::DegC;
+  unit_config.gain_mode = GainMode::Low;
+  const cv::Mat low_gain = stampHeatmap(unit_config, frame);
 
-  // The unit changes the stamped text, so the three heatmaps differ from each other ...
+  // The unit and the gain change the stamped text, so all four heatmaps differ from each other ...
   EXPECT_NE(0.0, cv::sum(degc != degk)[0]);
   EXPECT_NE(0.0, cv::sum(degc != counts)[0]);
-  EXPECT_NE(0.0, cv::sum(degk != counts)[0]);
-  // ... but only the text: the picture the readings are stamped on is the same stretch.
+  EXPECT_NE(0.0, cv::sum(degc != low_gain)[0]);
+  // ... but only the text: the picture the readings are stamped on is the same stretch, because the
+  // stretch itself is in counts.
   EXPECT_EQ(0.0, cv::sum(degc.rowRange(70, kRows) != degk.rowRange(70, kRows))[0]);
   EXPECT_EQ(0.0, cv::sum(degc.rowRange(70, kRows) != counts.rowRange(70, kRows))[0]);
+  EXPECT_EQ(0.0, cv::sum(degc.rowRange(70, kRows) != low_gain.rowRange(70, kRows))[0]);
 
-  // A non-radiometric camera still gets the overlay, printed in counts, and turning it off changes
-  // nothing but the text.
+  // Turning the overlay off changes nothing but the text.
   config.overlay_mode = OverlayMode::None;
-  config.radiometric = false;
   config.temp_mode = TempMode::DegC;
   Pipeline plain;
   plain.configure(config);
   PipelineOutputs plain_out;
   ASSERT_TRUE(plain.process(frame, plain_out));
   ASSERT_TRUE(plain_out.heatmap);
-  EXPECT_NE(0.0, cv::sum(counts != plain_out.heatmap8)[0]);
-  EXPECT_EQ(0.0, cv::sum(counts.rowRange(70, kRows) != plain_out.heatmap8.rowRange(70, kRows))[0]);
+  EXPECT_NE(0.0, cv::sum(degc != plain_out.heatmap8)[0]);
+  EXPECT_EQ(0.0, cv::sum(degc.rowRange(70, kRows) != plain_out.heatmap8.rowRange(70, kRows))[0]);
 }
 
 TEST(Pipeline, ColormapNamesRoundTrip) {
@@ -789,7 +757,6 @@ TEST(Pipeline, HeatmapFollowsTheConfiguredPalette) {
 TEST(Pipeline, ProbeOutsideThePublishedImageIsReported) {
   auto config = defaultConfig();
   config.agc_mode = AgcMode::AutoRange;
-  config.radiometric = true;
   config.temp_mode = TempMode::DegC;
   config.heatmap_mode = HeatmapMode::Visual;
   config.overlay_mode = OverlayMode::MinMaxPtr;
@@ -805,7 +772,7 @@ TEST(Pipeline, ProbeOutsideThePublishedImageIsReported) {
     ASSERT_TRUE(pipeline.process(outlierFrame(), out));
     EXPECT_EQ(offset != 1, out.probe_valid);
     if (out.probe_valid) {
-      EXPECT_NEAR(countsToDegC(50000.0), out.probe_degC, kEps);
+      EXPECT_NEAR(degC(50000), out.probe_degC, kFloatEps);
     }
   }
 }

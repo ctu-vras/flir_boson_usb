@@ -115,14 +115,16 @@ The provided launch files expose all driver parameters as launch args. So most o
 | `agc_norm_margin` | How much wider the observed bounds are taken when `agc_norm` is on. Non-zero values mean the given number of lowest and highest grey levels of the active stretch are not used in the linear stretch. | `20.0` | ✔ |
 | `heatmap_mode` | Content of `image_heatmap`. `none`: the topic is not created at all. `visual`: colourise `image_visual`. Requires an `agc_mode` other than `none`. | `none` | |
 | `overlay_mode` | What is stamped on `image_heatmap`. `none`: nothing. `min_max_ptr`: the minimum, maximum and probe reading text and the probe marker. `min_max`: the minimum and maximum text only. `ptr`: the probe text and marker only. Printed in the unit of `temp_mode`. See [The heatmap overlay](#the-heatmap-overlay). | `min_max_ptr` | ✔ |
-| `temp_ptr_x` | X coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `319` | ✔ |
-| `temp_ptr_y` | Y coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `255` | ✔ |
+| `temp_ptr_x` | X coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `319` (`159` for a 320 sensor) | ✔ |
+| `temp_ptr_y` | Y coord of the temperature probe point, i.e. the point whose reading is published on `ptr_temp` and stamped as `Ptr`. It has to lie inside the published image. | `255` (`127` for a 320 sensor) | ✔ |
 | `colormap` | Palette `image_heatmap` is painted with. `autumn`, `bone`, `jet`, `winter`, `rainbow`, `ocean`, `summer`, `spring`, `cool`, `hsv`, `pink` and `hot` are always available; `parula` needs OpenCV 4.0 or newer, `magma`, `inferno`, `plasma`, `viridis` and `cividis` need 4.4, and `twilight`, `twilight_shifted`, `turbo` and `deepgreen` need 4.5. Case is ignored. A palette the built OpenCV does not have is not offered, and an unknown value keeps the palette used so far (at startup it stops the node). | `jet` | ✔ |
-| `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit as `32FC1`. `centi_c`, `centi_k`, `centi_f`: the same three units in hundredths, as `16SC1`, `16UC1` and `16SC1`. Only offered for radiometric cameras; see [Temperature units](#temperature-units). | `none` | |
-| `radiometric` | Whether the camera can map the raw counts to absolute temperatures, which is what enables `image_temp`, `min_temp`, `max_temp` and `ptr_temp`. `auto`: query the device (fallback to `false`). `true`/`false`: override the detection. | `auto` | |
+| `gain` | Gain mode the camera runs with, `high` or `low`. The driver does not switch the gain (do that in the FLIR GUI); the parameter only says which gain the counts were made with, because the two gains map the same temperature to different counts. | `high` | |
+| `temp_mode` | Unit of `image_temp`. `none`: the topic is not created at all. `counts`: the raw counts, compensated for the gain they were made with, as `32FC1`. `c`, `k`, `f`: absolute degrees Celsius, Kelvin and Fahrenheit, also `32FC1`. Offered on every camera; on a non-radiometric one the absolute units are only a rescaled guess; see [Temperature units](#temperature-units). The launch files pass `none`, so that a stream nobody subscribes to is not made. | `counts` | |
+| `radiometric` | Whether the camera can map the raw counts to absolute temperatures. `auto`: query the device (fallback to `false`). `true`/`false`: override the detection. The driver reports the outcome in the log; the temperature outputs follow `temp_mode`, not this parameter. | `auto` | |
+| `ffc_mode` | Flat field correction mode the camera is switched to at startup, through the control channel. `-1`: leave the camera alone. `0`: manual, `1`: auto, `2`: external, `3`: shutter test. | `-1` | |
 
 Invalid combinations are rejected rather than silently corrected: an unknown `agc_mode`, `heatmap_mode`, `overlay_mode`,
-`temp_mode`, `colormap` or `radiometric` value stops the node at startup, and a `temp_ptr_x`/`temp_ptr_y`/temperature-limit
+`temp_mode`, `gain`, `colormap` or `radiometric` value stops the node at startup, and a `temp_ptr_x`/`temp_ptr_y`/temperature-limit
 change that would produce an invalid combination is refused by the parameter callback, which keeps the previous values.
 A `colormap` or `overlay_mode` change to a name that is not offered is reported in the node log, and the heatmap
 keeps painting with the palette and the stamped content it used so far.
@@ -144,27 +146,30 @@ The stretch that turns 16-bit counts into the `image_visual` grey levels is cont
 
 ### Temperature units
 
-`temp_mode` decides both the unit and the image encoding of `image_temp`. A radiometric Boson reports the scene
-temperature as hundredths of Kelvin, so every unit is only a rescaling of the raw counts:
+`temp_mode` decides the unit of `image_temp`; all its units are carried in `32FC1`. Every unit is a single affine
+rescaling of the raw counts, and what the counts stand for depends on the `gain` the camera runs with: on high gain
+the counts already are hundredths of Kelvin, on low gain the sensor amplifies twice as much and therefore counts
+twice as fast. With `m` the gain multiplier (`1` on high gain, `2` on low gain) and `c` the count value of a pixel:
 
-| `temp_mode` | `image_temp` encoding | Range the encoding can carry |
-| :--- | :--- | :--- |
-| `c` | `32FC1` | degrees Celsius, no practical limit |
-| `k` | `32FC1` | Kelvin, no practical limit |
-| `f` | `32FC1` | degrees Fahrenheit, no practical limit |
-| `centi_c` | `16SC1` | -327.68 to 327.67 deg C |
-| `centi_k` | `16UC1` | -273.15 to 382.20 deg C |
-| `centi_f` | `16SC1` | -199.82 to 164.26 deg C |
+| `temp_mode` | the pixel holds |
+| :--- | :--- |
+| `counts` | `c * m` -- the counts brought to the high-gain scale, so a given scene gives the same value whatever gain produced it |
+| `c` | `c * m / 100 - 273.15` deg C |
+| `k` | `c * m / 100` K |
+| `f` | `c * m / 100 * 1.8 - 459.67` deg F |
 
-The 16-bit units carry half the bytes of the 32-bit ones, which matters on a 60 Hz `640×512` stream, at the price of
-a resolution of a hundredth of a degree and of the range in the last column. `centi_k` is a lossless copy of the raw
-counts (the sensor already reports hundredths of Kelvin), so it is the cheapest way to move the full-range data to
-another node. A pixel whose temperature does not fit into the encoding is saturated to the corner of its range
-rather than wrapped around, which is visible as a patch of the extreme value on very hot or very cold scenes; pick
-one of the `32FC1` units when that can happen.
+`counts` is the default and is meaningful on any camera: a non-radiometric Boson produces counts too, they only do
+not stand for a calibrated temperature. The absolute units are offered on every camera as well, but on a camera
+whose counts are not calibrated they are a rescaled guess rather than a measurement. The map is only physically
+correct for a camera running in its temperature-linear mode, which is what radiometric Bosons use.
 
-The unit is a startup parameter, like the other presets: it decides whether `image_temp` exists at all and what
-encoding it carries, and both are fixed when the publishers are created.
+The `gain` parameter has to say what the camera really uses -- the driver never switches the gain itself, it only
+rescales the counts by the multiplier of the given gain. A camera that switches its gain by itself therefore
+publishes wrong temperatures in the frames between the switch and the parameter change; reading the gain from the
+frame telemetry is planned for a later stage.
+
+The unit is a startup parameter, like the other presets: it decides whether `image_temp` exists at all, and both it
+and the encoding are fixed when the publishers are created.
 
 ### The heatmap overlay
 
@@ -183,16 +188,14 @@ probe inside the published image and are left out when `temp_ptr_x`/`temp_ptr_y`
 
 Every reading that is stamped is printed in the unit of `temp_mode`, with the unit written next to the number:
 
-| camera and `temp_mode` | stamped text |
+| `temp_mode` | stamped text |
 | :--- | :--- |
-| radiometric, `c` / `k` / `f` | `Max: 26.85 deg C` (also `deg K`, `deg F`), with two decimals |
-| radiometric, `centi_c` / `centi_k` / `centi_f` | `Max: 2685 cdeg C` — hundredths of the degree, the integers the 16-bit image carries |
-| non-radiometric camera, or `temp_mode:=none` | `Max: 30000 counts` — the raw 16-bit thermal counts of the frame |
+| `c` / `k` / `f` | `Max: 26.85 deg C` (also `deg K`, `deg F`), with two decimals |
+| `counts` | `Max: 30000 counts` — the gain-compensated counts of the frame, printed as integers because the counts unit has no fractional part either |
 
-A camera without radiometry cannot be turned into absolute temperatures, so the overlay prints the counts it really
-has instead of a temperature that would be made up. In the hundredths units the printed number is the value the
-corresponding pixel of `image_temp` holds, i.e. saturated to the range of the encoding rather than the temperature
-that does not fit into it.
+Every stamped number is the value the corresponding pixel of `image_temp` holds: the overlay and the temperature
+image are computed from the same affine map of [`temp_mode`](#temperature-units) and `gain`, so they cannot
+disagree.
 
 ### Dynamically reconfigurable parameters
 
@@ -227,11 +230,131 @@ the current parameter preset disables. The condition under which each of the der
 
 - **`/<namespace>/image_heatmap`** (`sensor_msgs/msg/Image`, `bgr8`) — `image_visual` colourised with the `colormap` palette, with the `overlay_mode` readings and the probe marker stamped on it. Exists when `image_visual` exists and `heatmap_mode` is not `none`. See [The heatmap overlay](#the-heatmap-overlay).
 
-- **`/<namespace>/image_temp`** (`sensor_msgs/msg/Image`) — The absolute temperature of every pixel, in the unit and the encoding given by `temp_mode` (`32FC1` for `c`/`k`/`f`, `16SC1` or `16UC1` for the `centi_` units). Exists when the camera is radiometric (`radiometric`) and `temp_mode` is not `none`. See [Temperature units](#temperature-units).
+- **`/<namespace>/image_temp`** (`sensor_msgs/msg/Image`, `32FC1`) — Every pixel in the unit given by `temp_mode`, made by the radiometric filter the driver runs inside itself. Exists when `video_mode` is `RAW16` and `temp_mode` is not `none`. See [Temperature units](#temperature-units) and [Filter chains](#filter-chains).
 
 - **`/<namespace>/min_temp`**, **`/<namespace>/max_temp`**, **`/<namespace>/ptr_temp`** (`flir_boson_usb/msg/Temperature`, degrees Celsius) — The bounds of the stretch the visible pixels were made from, and the temperature at `temp_ptr_x`/`temp_ptr_y`. They exist exactly when `image_temp` exists.
 
 All image topics are advertised with `rclcpp::SystemDefaultsQoS` (reliable) and a queue of `queue_size` frames. Be aware of possible problems if you subscribe via reliable subscribers and the link does not have enough bandwidth.
+
+## Filter chains
+
+The RAW16 post-processing can also be expressed as a chain of `sensor_filters` plugins, so that the stages of
+the pipeline become individually selectable and replaceable instead of being hard-wired into the node. This
+section records how the driver's processing maps onto filters, which is the part that needs thinking about: a
+filter takes one message and returns one message, and the driver's processing does not fit that shape
+everywhere.
+
+The filters are pluginlib plugins of the `filters` category, loaded by the `flir_boson_usb/<Name>_<MessageType>`
+name shown in the table, and they are registered only in the ROS 2 build.
+[doc/filter_chains.md](doc/filter_chains.md) holds the full design, including what is still missing before the
+chain path can replace the code built into the node.
+
+Everything in this section that concerns the filter itself -- its name, parameters, input and output encodings --
+is covered by `test_radiometric_filter`, and the way the driver sets the chain up is covered by
+`test_radiometric_filter_chain`. A chain that somebody else set up was checked by hand rather than by a test:
+`examples/filters_example.launch.xml` was run against `sensor_filters` 2.0.0 on ROS 2 Jazzy with a synthetic
+`image_raw`, and the driver half of that launch has never been run because no camera was attached.
+
+**Status.** `image_temp` is made by `RadiometricFilter`, which the driver loads into a filter chain of its own
+when it creates the temperature publishers. `image_visual`, `image_heatmap` and the three temperature readings are
+still made by the processing stage in `pipeline.cpp`; the stages that should replace them are described below but
+not implemented.
+
+### The stages as filters
+
+| Filter | In | Out | Parameters |
+| :--- | :--- | :--- | :--- |
+| `flir_boson_usb/RadiometricFilter` | `mono16` counts | the `32FC1` encoding of `output_unit` | `gain`, `output_unit` |
+| `flir_boson_usb/AgcFilter_Image` (planned) | `mono16` counts | `mono8` | `mode`, `auto_low_pct`, `auto_high_pct`, `fixed_min_temp`, `fixed_max_temp`, `renormalize`, `norm_margin` |
+| `flir_boson_usb/ColormapFilter_Image` (planned) | `mono8` | `bgr8` | `colormap` |
+| `flir_boson_usb/HeatmapFilter_Image` (planned) | `mono16` counts | `bgr8` | `colormap`, `overlay_mode`, `probe_x`, `probe_y`, `temp_mode`, `gain` |
+
+### The chain inside the driver
+
+The driver does not wait for someone else to set the chain up: when `temp_mode` is not `none`, it creates a chain
+under the parameter prefix `image_temp`, puts a single `RadiometricFilter` named `radiometry` into it and pushes
+every `image_raw` through it to `image_temp`. The filter therefore has parameters of its own on the driver node,
+which the driver fills in from its own parameters when it creates the publishers:
+
+| Parameter of the driver node | Follows |
+| :--- | :--- |
+| `image_temp.filter1.params.gain` | `gain` |
+| `image_temp.filter1.params.output_unit` | `temp_mode` |
+
+They are set once at startup and are not meant to be set separately; changing `temp_mode` or `gain` means
+restarting the node, like the other presets. The name and type of the filter (`image_temp.filter1.name` and
+`.type`) are declared by the node as read-only parameters and are not worth touching -- replacing the filter there
+means rebuilding the node's list of publishers, which is what `createFilterChain()` and `addFiltersToNodeOptions()`
+do together.
+
+### A chain of someone else
+
+The very same filter can be run in a chain that is not part of the driver, to convert an `image_raw` that comes
+from somewhere else or to chain further stages onto it. A filter reads its parameters from its own namespace
+inside the chain, so on a chain node named `/boson_temperature` (the executable is
+`sensor_filters/image_filter_chain`, subscribing to `input` and publishing `output`) the conversion filter is
+configured by
+
+```yaml
+/boson_temperature:
+  ros__parameters:
+    image_filter_chain:
+      filter1:
+        name: radiometric
+        type: flir_boson_usb/RadiometricFilter
+        params:
+          gain: high            # high | low
+          output_unit: k        # counts | c | k | f
+```
+
+Run the driver with `temp_mode:=none` alongside such a chain, or the topic would carry the driver's conversion and
+the chain's; `examples/filters_example.launch.xml` shows the whole thing.
+
+The filter assumes it is fed counts of a camera in its temperature-linear mode: whoever writes the chain already
+knows what is in front of it. A non-radiometric Boson can use the filter too, with `output_unit` left at `counts`,
+to get a gain-compensated count image.
+
+The unit can also be changed while the chain runs:
+
+```text
+ros2 param set /boson_temperature image_filter_chain.filter1.params.output_unit f
+```
+
+The filter refuses a value it does not know, in which case the call fails and the filter keeps converting with
+the unit it had.
+
+The layout above was checked against `sensor_filters` 2.0.0, including the parameters the filter has. Two
+things about it are easy to get wrong: a parameter file has to key the chain node by its **fully qualified** name,
+so a namespaced chain node needs the namespace in the key or it starts with no filters and no warning; and the
+`input` and `output` remappings have to be absolute when the chain node runs in a namespace. Both are handled in
+`examples/filters_example.launch.xml`.
+
+The unit of the output belongs to the filter rather than to a separate unit-conversion filter because the
+rescaling from counts to a unit is a single arithmetic operation; splitting it into counts to degrees and
+degrees to the unit would rescale the whole image twice for no gain. `output_unit` accepts the same names as
+[temp_mode](#temperature-units), minus `none` -- a temperature image always has a unit. `gain` is a parameter of
+the filter rather than of the counts, because the counts themselves say nothing about the gain that made them.
+
+### Where the rest of the driver's processing went
+
+The stages above are the only ones that fit the one-in-one-out shape. Everything else the driver derives from
+a frame went somewhere else, and this is the part to review if you are considering extending the chain:
+
+| Driver mechanism | Where it is in the chain model | Why |
+| :--- | :--- | :--- |
+| `radiometric` auto-detection over the control channel | stays in the driver, which is the only thing that talks to the camera | The filters do not ask. A chain of a non-radiometric camera simply does not contain the filters that need absolute temperatures, which is how the "the topic either carries data or does not exist" rule is expressed on the chain path. Since the temperature image is offered for non-radiometric counts too, the driver only reports the detected state in the log today. |
+| `gain` of the camera | the `gain` parameter of the filter, pushed in by the driver | The filter is the only consumer of the gain, and the driver is the only thing that could learn the real gain from the camera or from the frame telemetry. Once telemetry carries the gain, the driver will set the filter's parameter from it instead of from the static parameter. |
+| `min_temp`, `max_temp`, `ptr_temp` | a node subscribing to the temperature image (planned), not a filter | They are scalars, and a filter has one output, which is already the temperature image. They still come from the processing stage today. |
+| `temp_ptr_x`, `temp_ptr_y` | the heatmap filter **and** the readings node | The overlay and the readings need the same probe position and a filter cannot be handed anything but its input image, so the parameter is necessarily duplicated. Keep the two in sync. |
+| `camera_info` | needed by none of these filters | The counts-to-temperature map is affine and constant, so there is nothing to read from the calibration. |
+| `zoom_enable` | out of the chain | It changes the image size, which silently invalidates `CameraInfo`; a resize filter would have to come with a calibration-scaling filter. |
+| `ros2 param set` of the AGC, heatmap, overlay and probe parameters | the filter's own parameter, applied by its `reconfigureCB()` | `filters::FilterChain` -- which is what a `sensor_filters` chain, and the driver's own chain, run on -- forwards every parameter whose name starts with a filter's prefix to that filter, as an *on-set* callback, i.e. before the new value reaches the parameter storage. A filter therefore has to declare the parameter modifiable and take the new value from the callback argument; `getParam()` would still return the old one. The radiometric filter does exactly that, and changing its unit on a running chain is covered by `test_radiometric_filter_chain`. The planned filters have to do the same. |
+
+The planned `HeatmapFilter_Image` is deliberately a single filter covering both the palette and the overlay
+text, rather than a palette filter followed by an overlay filter. The overlay prints the minimum, maximum and
+probe temperatures of the frame it annotates, and those have to be computed from the raw counts -- by the time
+a palette filter has run, the counts are gone. So the filter that draws the overlay has to sit on the counts
+and produce the colour image itself.
 
 ## Calibration
 
@@ -253,7 +376,7 @@ The URL can also contain the substitution `${NAME}` which expands to the camera 
 
 ## Customizing the RAW16 pipeline
 
-To implement custom radiometric filters, lookup tables, or neural network inference arrays directly on raw thermal data, process the `RAW16` (`mono16`) topic stream externally within an independent node.
+To implement custom radiometric filters, lookup tables, or neural network inference arrays directly on raw thermal data, process the `RAW16` (`mono16`) topic stream externally within an independent node. If what you want to chain together are stages of this kind, [Filter chains](#filter-chains) covers doing it as `filters` plugins instead, and the conversion filter of this package is one example of such a plugin.
 
 ## Troubleshooting
 
@@ -263,7 +386,7 @@ To implement custom radiometric filters, lookup tables, or neural network infere
 
 - **`Driver reports YUV bytesperline=X but width=Y`** — The driver is reporting strided YUV buffers, which this node does not currently handle. File an issue with the output of `v4l2-ctl -d <dev> --get-fmt-video` attached.
 
-- **A topic you expect is missing from `ros2 topic list`.** The parameter that enables it is off — `image_visual` needs `video_mode:=RAW16` and an `agc_mode` other than `none`, `image_heatmap` additionally needs `heatmap_mode:=visual`, and `image_temp` with the three temperature topics needs a radiometric camera and a `temp_mode` other than `none`. This is intentional; see [Published topics](#published-topics).
+- **A topic you expect is missing from `ros2 topic list`.** The parameter that enables it is off — `image_visual` needs `video_mode:=RAW16` and an `agc_mode` other than `none`, `image_heatmap` additionally needs `heatmap_mode:=visual`, and `image_temp` with the three temperature topics needs `video_mode:=RAW16` and a `temp_mode` other than `none`. This is intentional; see [Published topics](#published-topics).
 
 - **AGC output looks washed out or saturated.** Tune `agc_auto_low_pct` and `agc_auto_high_pct`, or switch to `agc_mode:=fixed_range` — see [Tuning the AGC](#tuning-the-agc).
 

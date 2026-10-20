@@ -89,6 +89,7 @@ if(catkin_FOUND)
     cras_cpp_common
     cv_bridge
     dynamic_reconfigure
+    filters
     image_transport
     nodelet
     pluginlib
@@ -188,7 +189,11 @@ elseif(ament_cmake_FOUND)
   #catkin_lint: ignore_once duplicate_find
   find_package(cv_bridge REQUIRED)
   #catkin_lint: ignore_once duplicate_find
+  find_package(filters REQUIRED)
+  #catkin_lint: ignore_once duplicate_find
   find_package(image_transport REQUIRED)
+  #catkin_lint: ignore_once duplicate_find
+  find_package(pluginlib REQUIRED)
   find_package(rclcpp REQUIRED)
   find_package(rclcpp_components REQUIRED)
   #catkin_lint: ignore_once duplicate_find
@@ -198,29 +203,46 @@ elseif(ament_cmake_FOUND)
 
   target_link_libraries(boson_api PUBLIC cras_cpp_common::cras_expected)
 
-  # The image processing does not depend on ROS, so it is a separate library that can be tested
-  # without a running ROS and without a camera.
   add_library(flir_boson_pipeline SHARED src/pipeline.cpp)
   target_link_libraries(flir_boson_pipeline PUBLIC cv_bridge::cv_bridge)
+
+  add_library(radiometric_filter SHARED src/filters/radiometric_filter.cpp)
+  target_link_libraries(radiometric_filter PUBLIC
+    flir_boson_pipeline
+    # cras_type_utils is not pulled in by cras_filter_base, but it is needed by it: the templated getParam()
+    # instantiates cras::typeName<T>() in the translation unit that calls it, and that is this one.
+    cras_cpp_common::cras_filter_base
+    cras_cpp_common::cras_type_utils
+    cv_bridge::cv_bridge
+    filters::filter_base
+    pluginlib::pluginlib
+    rclcpp::rclcpp
+    ${sensor_msgs_TARGETS}
+  )
+  pluginlib_export_plugin_description_file(filters radiometric_filter.xml)
 
   add_library(boson_camera_component SHARED src/BosonCamera.cpp)
   target_compile_definitions(boson_camera_component PRIVATE "ROS2")
   target_link_libraries(boson_camera_component PUBLIC
-    flir_boson_pipeline
     boson_api
+    flir_boson_pipeline
     camera_info_manager::camera_info_manager
     cras_cpp_common::cras_image_transport
     cras_cpp_common::cras_string_utils
     cv_bridge::cv_bridge
+    filters::filter_chain
     image_transport::image_transport
     rclcpp::rclcpp
     rclcpp_components::component
     ${sensor_msgs_TARGETS}
   )
+  add_dependencies(boson_camera_component
+    radiometric_filter
+  )
   rclcpp_components_register_node(
     boson_camera_component PLUGIN "${PROJECT_NAME}::BosonCamera" EXECUTABLE boson_camera_node)
 
-  install(TARGETS boson_api boson_camera_component flir_boson_pipeline
+  install(TARGETS boson_api boson_camera_component flir_boson_pipeline radiometric_filter
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
@@ -250,12 +272,39 @@ elseif(ament_cmake_FOUND)
 
   if(BUILD_TESTING)
     find_package(cras_lint REQUIRED)
+    find_package(ament_cmake_gtest REQUIRED)
+
     cras_lint_common()
     cras_lint_cpp()
 
-    find_package(ament_cmake_gtest REQUIRED)
     ament_add_gtest(test_pipeline test/test_pipeline.cpp)
     target_link_libraries(test_pipeline flir_boson_pipeline)
+
+    ament_add_gtest(test_radiometric_filter test/test_radiometric_filter.cpp)
+    target_link_libraries(test_radiometric_filter
+      # Link the filter itself, not just its header, so that the test runs the very code the driver loads
+      # through pluginlib. It brings the pipeline library, cras_filter_base and cv_bridge with it.
+      radiometric_filter
+      rclcpp::rclcpp
+      ${sensor_msgs_TARGETS}
+    )
+
+    ament_add_gtest(test_radiometric_filter_chain test/test_radiometric_filter_chain.cpp)
+    target_link_libraries(test_radiometric_filter_chain
+      # The filter is deliberately not linked here: the chain loads it through pluginlib, and a class that is
+      # linked into the executable as well makes class_loader report a namespace collision. The pipeline
+      # library is only there for the unit table the expected values are taken from.
+      flir_boson_pipeline
+      filters::filter_chain
+      rclcpp::rclcpp
+      ${sensor_msgs_TARGETS}
+    )
+    # The chain looks the filter up in the plugin description of this package, so it has to be built first, and
+    # it has to know where the package was installed to when the tests are run without the package on
+    # AMENT_PREFIX_PATH (which colcon test puts there, and plain ctest does not).
+    add_dependencies(test_radiometric_filter_chain radiometric_filter)
+    target_compile_definitions(test_radiometric_filter_chain
+      PRIVATE FLIR_BOSON_USB_PACKAGE_PREFIX="${CMAKE_INSTALL_PREFIX}")
   endif()
 
   ament_package()

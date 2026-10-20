@@ -1,0 +1,19 @@
+<!--
+SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: Czech Technical University in Prague
+-->
+<class_libraries>
+  <library path="radiometric_filter">
+    <class name="flir_boson_usb/RadiometricFilter"
+           type="flir_boson_usb::RadiometricFilter"
+           base_class_type="filters::FilterBase&lt;sensor_msgs::msg::Image&gt;">
+      <description>
+        Turn the raw 16-bit counts of a radiometric Boson into 32-bit float absolute temperatures. The gain the counts
+        were produced with and the unit of the result are given by the gain and output_unit parameters of the filter.
+        A non-radiometric camera can at least use the "counts" output_unit to get the number of raw counts compensated
+        for gain switching.
+      </description>
+      <author>Czech Technical University in Prague</author>
+    </class>
+  </library>
+</class_libraries>

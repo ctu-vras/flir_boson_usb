@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: Czech Technical University in Prague
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #ifdef HAS_BOSON_SDK
 typedef bool _Bool;
@@ -37,6 +39,17 @@ std::string to_string(const uint8_t* value, const size_t len) {
 }
 
 namespace flir_boson_usb {
+
+namespace {
+
+/**
+ * \brief When commands are sent too quickly to the camera, there are lost packets. Call this before any SDK command.
+ */
+void pre_command_sleep() {
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+}
 
 BosonAPI::BosonAPI(const std::string& uart_port_name) {
 #ifdef HAS_BOSON_SDK
@@ -82,6 +95,7 @@ cras::expected<std::string, std::string> BosonAPI::getCameraProductNumber() cons
 #ifdef HAS_BOSON_SDK
   FLR_BOSON_PARTNUMBER_T pn;
   memset(pn.value, 0, sizeof(pn.value));
+  pre_command_sleep();
   if (const auto res = bosonGetCameraPN(&pn); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get camera product number");
   }
@@ -94,6 +108,7 @@ cras::expected<std::string, std::string> BosonAPI::getCameraProductNumber() cons
 cras::expected<uint32_t, std::string> BosonAPI::getCameraSerialNumber() const {
 #ifdef HAS_BOSON_SDK
   uint32_t sn;
+  pre_command_sleep();
   if (const auto res = bosonGetCameraSN(&sn); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get camera serial number");
   }
@@ -106,6 +121,7 @@ cras::expected<uint32_t, std::string> BosonAPI::getCameraSerialNumber() const {
 cras::expected<std::array<uint32_t, 3>, std::string> BosonAPI::getCameraFirmwareVersion() const {
 #ifdef HAS_BOSON_SDK
   uint32_t major, minor, patch;
+  pre_command_sleep();
   if (const auto res = bosonGetSoftwareRev(&major, &minor, &patch); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get camera firmware version");
   }
@@ -118,6 +134,7 @@ cras::expected<std::array<uint32_t, 3>, std::string> BosonAPI::getCameraFirmware
 cras::expected<double, std::string> BosonAPI::getSensorTemperature() const {
 #ifdef HAS_BOSON_SDK
   int16_t temp;
+  pre_command_sleep();
   if (const auto res = bosonlookupFPATempDegCx10(&temp); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get sensor temperature");
   }
@@ -134,6 +151,7 @@ cras::expected<float, std::string> BosonAPI::getTimestamp(const int32_t type) co
   }
   const auto timestampType = static_cast<FLR_BOSON_TIMESTAMPTYPE_E>(type);
   float stamp;
+  pre_command_sleep();
   if (const auto res = bosonGetTimeStamp(timestampType, &stamp); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get timestamp");
   }
@@ -146,7 +164,9 @@ cras::expected<float, std::string> BosonAPI::getTimestamp(const int32_t type) co
 cras::expected<bool, std::string> BosonAPI::isRadiometric() const {
 #ifdef HAS_BOSON_SDK
   FLR_ENABLE_E capable;
+  pre_command_sleep();
   if (const auto res = radiometryGetRadiometryCapable(&capable); res != R_SUCCESS) {
+    pre_command_sleep();
     const auto maybe_product = getCameraProductNumber();
     if (maybe_product.value_or("").length() == 15) {
       return (*maybe_product)[13] == 'R';
@@ -162,6 +182,7 @@ cras::expected<bool, std::string> BosonAPI::isRadiometric() const {
 cras::expected<uint32_t, std::string> BosonAPI::getUptime() const {
 #ifdef HAS_BOSON_SDK
   uint32_t uptime;
+  pre_command_sleep();
   if (const auto res = sysctrlGetUptimeSecs(&uptime); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get uptime");
   }
@@ -174,6 +195,7 @@ cras::expected<uint32_t, std::string> BosonAPI::getUptime() const {
 cras::expected<bool, std::string> BosonAPI::isTelemetryEnabled() const {
 #ifdef HAS_BOSON_SDK
   FLR_ENABLE_E enabled;
+  pre_command_sleep();
   if (const auto res = telemetryGetState(&enabled); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to get telemetry state");
   }
@@ -194,16 +216,37 @@ cras::expected<void, std::string> BosonAPI::enableTelemetry(
   const auto pack = static_cast<FLR_TELEMETRY_PACKING_E>(packing);
 
   if (enable) {
+    pre_command_sleep();
     if (const auto res = telemetrySetLocation(location); res != R_SUCCESS) {
       return cras::make_unexpected("Failed to set telemetry location");
     }
+    pre_command_sleep();
     if (const auto res = telemetrySetPacking(pack); res != R_SUCCESS) {
       return cras::make_unexpected("Failed to set telemetry packing");
     }
   }
+  pre_command_sleep();
   if (const auto res = telemetrySetState(state); res != R_SUCCESS) {
     return cras::make_unexpected("Failed to set telemetry state");
   }
+  return {};
+#else
+  return cras::make_unexpected("Boson SDK not available");
+#endif
+}
+
+cras::expected<void, std::string> BosonAPI::setFFCMode(int32_t mode) {
+#ifdef HAS_BOSON_SDK
+  if (mode < 0 || mode >= static_cast<int32_t>(FLR_BOSON_FFCMODE_END)) {
+    return cras::make_unexpected("Invalid FFC mode");
+  }
+
+  const auto ffc = static_cast<FLR_BOSON_FFCMODE_E>(mode);
+  pre_command_sleep();
+  if (const auto res = bosonSetFFCMode(ffc); res != R_SUCCESS) {
+    return cras::make_unexpected("Failed to set FFC mode");
+  }
+
   return {};
 #else
   return cras::make_unexpected("Boson SDK not available");

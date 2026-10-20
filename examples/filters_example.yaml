@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: Czech Technical University in Prague
+
+/**:
+  ros__parameters:
+    image_filter_chain:
+      filter1:
+        name: radiometric
+        type: flir_boson_usb/RadiometricFilter
+        params:
+          gain: $(var gain)
+          output_unit: $(var output_unit)

@@ -28,16 +28,19 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <linux/videodev2.h>
 #include <opencv2/core/core.hpp>
 
 #include <flir_boson_usb/pipeline.hpp>
+#include <flir_boson_usb/radiometric_filter.hpp>
 
 #ifdef ROS2
 
 #include <camera_info_manager/camera_info_manager.hpp>
+#include <filters/filter_chain.hpp>
 #include <image_transport/image_transport.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -49,6 +52,7 @@
 #include <camera_info_manager/camera_info_manager.h>
 #include <cras_cpp_common/nodelet_utils.hpp>
 #include <dynamic_reconfigure/server.h>
+#include <filters/filter_chain.h>
 #include <flir_boson_usb/BosonCameraConfig.h>
 #include <image_transport/image_transport.h>
 #include <ros/ros.h>
@@ -63,10 +67,12 @@ namespace flir_boson_usb {
 #ifdef ROS2
 using Header = std_msgs::msg::Header;
 using CameraInfo = sensor_msgs::msg::CameraInfo;
+using Image = sensor_msgs::msg::Image;
 using Temperature = sensor_msgs::msg::Temperature;
 #else
 using Header = std_msgs::Header;
 using CameraInfo = sensor_msgs::CameraInfo;
+using Image = sensor_msgs::Image;
 using Temperature = sensor_msgs::Temperature;
 #endif
 
@@ -115,6 +121,7 @@ private:
    * \return False when the name is not a known palette.
    */
   bool setColormap(const std::string& name);
+
   /**
    * \brief Turn a name into the content stamped on the heatmap.
    *
@@ -124,6 +131,17 @@ private:
    * \return False when the name is not a supported overlay content.
    */
   bool setOverlayMode(const std::string& name);
+
+  /**
+   * \brief Turn a gain mode name into the gain mode.
+   *
+   * The name is matched case-insensitively. The name and its typed form are updated together, and both are
+   * left untouched when the name is not a supported gain mode.
+   * \note The caller has to hold mutex_ when other threads can already read the parameters.
+   * \return False when the name is not a supported gain mode.
+   */
+  bool setGainMode(const std::string& name);
+
   /**
    * \brief Turn a unit name into the unit the absolute temperature image is carried in.
    *
@@ -133,6 +151,7 @@ private:
    * \return False when the name is not a known unit.
    */
   bool setTempMode(const std::string& name);
+
   void init();
   bool openCamera();
   bool closeCamera();
@@ -149,6 +168,9 @@ private:
   cv::Size publishedSize() const;
   //! \brief Whether the temperature probe lies inside the published image.
   bool probeInBounds() const;
+
+  cras::expected<std::unique_ptr<filters::FilterChain<Image>>, std::string> createFilterChain(
+      const std::string& param_prefix, const std::vector<std::pair<std::string, std::string>>& filters);
 
 #ifdef ROS2
   rclcpp::TimerBase::SharedPtr init_timer_;
@@ -198,12 +220,13 @@ private:
 
   // The image processing itself, which does not know anything about ROS.
   Pipeline pipeline_;
+  std::unique_ptr<filters::FilterChain<Image>> filter_chain_radiometry_;
 
   Temperature max_temp_msg_, min_temp_msg_, ptr_temp_msg_;
 
   // Parameters
   std::string frame_id_, dev_path_, control_dev_path_, camera_info_url_, video_mode_str_, sensor_type_str_;
-  std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, temp_mode_str_;
+  std::string radiometric_str_, agc_mode_str_, heatmap_mode_str_, gain_mode_str_, temp_mode_str_;
   double frame_rate_;
   //! \brief The depth of the publisher queues (the keep_last history depth) of every published topic.
   int queue_size_;
@@ -215,10 +238,12 @@ private:
   // Resolved from radiometric_request_ and the device identification once the camera is open.
   bool radiometric_;
   std::string device_id_, device_serial_;
+  int32_t ffc_mode_;
 
   // The typed form of the preset parameters above.
   AgcMode agc_mode_;
   HeatmapMode heatmap_mode_;
+  GainMode gain_mode_;
   TempMode temp_mode_;
   //! \brief The image encoding that goes with temp_mode_; the publishers have no access to the stage.
   std::string temp_encoding_;

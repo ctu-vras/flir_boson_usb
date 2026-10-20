@@ -129,6 +129,11 @@ std::string colormapList(const std::string& separator) {
   return valueList(colormapNames(), separator);
 }
 
+//! \brief The gain modes the camera can be set to.
+std::string gainList(const std::string& separator) {
+  return valueList(gainModeNames(), separator);
+}
+
 //! \brief The units the temperature image can be carried in.
 std::string tempList(const std::string& separator) {
   return valueList(tempModeNames(), separator);
@@ -179,14 +184,22 @@ inline rcl_interfaces::msg::ParameterDescriptor paramDescRangeF(
   return desc;
 }
 
+// Unfortunately, programatically creating filter chains requires the .name field to be present in param overrides.
+// We add all possible filters here and later we conditionally construct the filter chains as needed.
+rclcpp::NodeOptions addFiltersToNodeOptions(const rclcpp::NodeOptions& options) {
+  auto new_options = options;
+  new_options.append_parameter_override("image_temp.filter1.name", "radiometry");
+  return new_options;
+}
+
 BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
-    : Node("boson_camera", options), width_(-1), height_(-1), fd_(-1), cap_({}), expected_height_(-1), bytesperline_(0),
-      is_yv12_(false), frame_rate_(0.0), queue_size_(1), video_mode_(Encoding::YUV),
-      zoom_enable_(false), yuv_color_(false), sensor_type_(SensorTypes::Boson640),
-      radiometric_request_(TriState::Auto), radiometric_(false), agc_mode_(AgcMode::AutoRange),
-      heatmap_mode_(HeatmapMode::None), temp_mode_(TempMode::None), temp_ptr_x_(0), temp_ptr_y_(0),
-      agc_fixed_max_temp_(50), agc_fixed_min_temp_(20), agc_norm_(false), agc_auto_low_pct_(1.0),
-      agc_auto_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet),
+    : Node("boson_camera", addFiltersToNodeOptions(options)), width_(-1), height_(-1), fd_(-1), cap_({}),
+      expected_height_(-1), bytesperline_(0), is_yv12_(false), frame_rate_(0.0), queue_size_(1),
+      video_mode_(Encoding::YUV), zoom_enable_(false), yuv_color_(false), sensor_type_(SensorTypes::Boson640),
+      radiometric_request_(TriState::Auto), radiometric_(false), ffc_mode_(-1), agc_mode_(AgcMode::AutoRange),
+      heatmap_mode_(HeatmapMode::None), gain_mode_(GainMode::High), temp_mode_(TempMode::None),
+      temp_ptr_x_(0), temp_ptr_y_(0), agc_fixed_max_temp_(50), agc_fixed_min_temp_(20), agc_norm_(false),
+      agc_auto_low_pct_(1.0), agc_auto_high_pct_(1.0), agc_norm_margin_(20.0), colormap_(Colormap::Jet),
       overlay_mode_(OverlayMode::MinMaxPtr) {
   frame_id_ = this->declare_parameter("frame_id", "boson_camera", paramDesc("Frame used in header.frame_id"));
   dev_path_ = this->declare_parameter(
@@ -260,7 +273,7 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     paramDesc(
       "What is stamped on image_heatmap. none: nothing. min_max_ptr: the minimum, maximum and probe reading text and "
       "the probe marker. min_max: the minimum and maximum reading text only. ptr: the probe reading text and the "
-      "probe marker. The readings are printed in the unit of temp_mode (in raw counts for a non-radiometric camera). "
+      "probe marker. The readings are printed in the unit of temp_mode. "
       "Only honoured when a heatmap is published.",
       overlayList("|")));
   colormap_str_ = this->declare_parameter(
@@ -268,12 +281,15 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     paramDesc(
       "Colour palette image_heatmap is painted with. Only honoured when a heatmap is published.",
       colormapList("|")));
+  gain_mode_str_ = this->declare_parameter(
+    "gain", "high",
+    paramDesc("Gain mode of the camera. high: high gain. low: low gain.", gainList("|")));
   temp_mode_str_ = this->declare_parameter(
-    "temp_mode", "none",
+    "temp_mode", "counts",
     paramDesc(
-      "Unit of the image_temp topic. none: no temperature topic. c, k, f: degrees Celsius, Kelvin and Fahrenheit "
-      "as 32-bit floats. centi_c, centi_k, centi_f: the same units in hundredths as 16-bit integers. Only offered "
-      "for radiometric cameras; also decides whether max_temp, min_temp and ptr_temp exist.",
+      "Unit of the image_temp topic. counts: raw counts with gain compensation as 32-bit floats. "
+      "c, k, f: degrees Celsius, Kelvin and Fahrenheit as 32-bit floats. "
+      "Also decides whether max_temp, min_temp and ptr_temp exist.",
       tempList("|")));
   camera_info_url_ = this->declare_parameter(
     "camera_info_url", "",
@@ -294,9 +310,13 @@ BosonCamera::BosonCamera(const rclcpp::NodeOptions& options)
     "radiometric", "auto",
     paramDesc(
       "Whether the camera can map the raw counts to absolute temperatures. "
-      "auto: match the device identification against radiometric_patterns. "
-      "true/false: override the detection. Only radiometric cameras publish image_temp and the temperature topics.",
+      "auto: ask the camera over the control device, fall back to false when it cannot be asked. "
+      "true/false: override the detection. The detected state is reported in the log; the temperature "
+      "outputs are created by temp_mode, not by this parameter.",
       "auto|true|false"));
+  ffc_mode_ = this->declare_parameter(
+    "ffc_mode", -1,
+    paramDescRangeI("Camera FFC mode. -1: do not change; 0: manual; 1: auto; 2: external; 3: shutter test", -1, 3));
 
   if (!this->validateParams()) {
     rclcpp::shutdown();
@@ -427,7 +447,8 @@ void BosonCamera::onInit() {
   pnh_.param<std::string>("heatmap_mode", heatmap_mode_str_, "none");
   pnh_.param<std::string>("overlay_mode", overlay_mode_str_, "min_max_ptr");
   pnh_.param<std::string>("colormap", colormap_str_, "jet");
-  pnh_.param<std::string>("temp_mode", temp_mode_str_, "none");
+  pnh_.param<std::string>("gain", gain_mode_str_, "high");
+  pnh_.param<std::string>("temp_mode", temp_mode_str_, "counts");
   pnh_.param<int>("temp_ptr_x", temp_ptr_x_, 319);
   pnh_.param<int>("temp_ptr_y", temp_ptr_y_, 255);
   pnh_.param<int>("agc_fixed_max_temp", agc_fixed_max_temp_, 50);
@@ -523,6 +544,16 @@ bool BosonCamera::setOverlayMode(const std::string& name) {
   return true;
 }
 
+bool BosonCamera::setGainMode(const std::string& name) {
+  GainMode mode;
+  if (!gainModeFromString(cras::toLower(name), mode)) {
+    return false;
+  }
+  gain_mode_str_ = name;
+  gain_mode_ = mode;
+  return true;
+}
+
 bool BosonCamera::setTempMode(const std::string& name) {
   TempMode mode;
   if (!tempModeFromString(cras::toLower(name), mode)) {
@@ -611,6 +642,12 @@ bool BosonCamera::validateParams() {
     return false;
   }
 
+  if (!setGainMode(gain_mode_str_)) {
+    CRAS_ERROR(
+      "Invalid gain value '%s', expected one of %s.", gain_mode_str_.c_str(), gainList(", ").c_str());
+    return false;
+  }
+
   if (!setTempMode(temp_mode_str_)) {
     CRAS_ERROR(
       "Invalid temp_mode value '%s', expected one of %s.", temp_mode_str_.c_str(), tempList(", ").c_str());
@@ -660,6 +697,38 @@ bool BosonCamera::probeInBounds() const {
   return temp_ptr_x_ >= 0 && temp_ptr_x_ < size.width && temp_ptr_y_ >= 0 && temp_ptr_y_ < size.height;
 }
 
+cras::expected<std::unique_ptr<filters::FilterChain<Image>>, std::string> BosonCamera::createFilterChain(
+    const std::string& param_prefix, const std::vector<std::pair<std::string, std::string>>& filters) {
+  const auto& overrides = get_node_parameters_interface()->get_parameter_overrides();
+
+  auto i = 0;
+  for (const auto& [name, type] : filters) {
+    i++;  // first filter has number 1
+    const auto num_prefix = param_prefix + ".filter" + cras::to_string(i) + ".";
+
+    const auto name_param = num_prefix + "name";
+    if (overrides.find(name_param) == overrides.end()) {
+      throw std::runtime_error("Add parameter " + name_param + "=" + name + " to addFiltersToNodeOptions()");
+    }
+
+    declare_parameter(name_param, name);
+    declare_parameter(num_prefix + "type", type);
+  }
+
+  auto result = std::make_unique<filters::FilterChain<Image>>("sensor_msgs::msg::Image");
+  if (!result->configure(param_prefix, get_node_logging_interface(), get_node_parameters_interface())) {
+    return cras::make_unexpected("Configuration of filter chain " + param_prefix + " failed.");
+  }
+  if (result->get_length() == 0) {
+    return cras::make_unexpected("Configuration of filter chain " + param_prefix + " yielded no filters.");
+  }
+  if (result->get_length() != filters.size()) {
+    return cras::make_unexpected("Configuration of filter chain " + param_prefix + " yielded wrong number of filters.");
+  }
+
+  return std::move(result);
+}
+
 PipelineConfig BosonCamera::pipelineConfig() const {
   std::lock_guard<std::mutex> lock(mutex_);
   PipelineConfig config;
@@ -668,6 +737,7 @@ PipelineConfig BosonCamera::pipelineConfig() const {
   config.heatmap_mode = heatmap_mode_;
   config.overlay_mode = overlay_mode_;
   config.colormap = colormap_;
+  config.gain_mode = gain_mode_;
   config.temp_mode = temp_mode_;
   config.radiometric = radiometric_;
   config.agc_auto_low_pct = agc_auto_low_pct_;
@@ -844,6 +914,14 @@ void BosonCamera::init() {
           stamp_to_str(timestamps[0]).c_str(), stamp_to_str(timestamps[1]).c_str(), stamp_to_str(timestamps[2]).c_str(),
           stamp_to_str(timestamps[3]).c_str());
       }
+
+      if (ffc_mode_ >= 0) {
+        if (const auto res = api_->setFFCMode(ffc_mode_); res.has_value()) {
+          CRAS_INFO("FFC mode set to %d", ffc_mode_);
+        } else {
+          CRAS_WARN("Failed to set FFC mode to %d: %s", ffc_mode_, res.error().c_str());
+        }
+      }
     }
   }
 
@@ -914,7 +992,7 @@ void BosonCamera::createPublishers() {
   // preset enables. The processing stage uses exactly the same conditions.
   const bool visual = video_mode_ == Encoding::RAW16 && agc_mode_ != AgcMode::None;
   const bool heatmap = visual && heatmap_mode_ != HeatmapMode::None;
-  const bool temp = radiometric_ && temp_mode_ != TempMode::None && video_mode_ == Encoding::RAW16;
+  const bool temp = temp_mode_ != TempMode::None && video_mode_ == Encoding::RAW16;
 
   if (video_mode_ != Encoding::RAW16) {
     if (agc_mode_ != AgcMode::None || heatmap_mode_ != HeatmapMode::None || temp_mode_ != TempMode::None) {
@@ -923,12 +1001,6 @@ void BosonCamera::createPublishers() {
     }
   } else if (agc_mode_ == AgcMode::None) {
     CRAS_INFO("agc_mode is none; publishing image_raw only.");
-  }
-
-  if (temp_mode_ != TempMode::None && !radiometric_) {
-    CRAS_WARN(
-      "temp_mode is %s but the camera was resolved as non-radiometric; the raw counts cannot be turned into "
-      "absolute temperatures, so no temperature output is published.", temp_mode_str_.c_str());
   }
 
 #ifdef ROS2
@@ -945,10 +1017,23 @@ void BosonCamera::createPublishers() {
     image_pub_heatmap_ = image_transport::create_publisher(this, "image_heatmap", cam_pub_qos_rmw, opts);
   }
   if (temp) {
-    image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos_rmw, opts);
-    max_temp_pub_ = this->create_publisher<Temperature>("max_temp", cam_pub_qos, opts);
-    min_temp_pub_ = this->create_publisher<Temperature>("min_temp", cam_pub_qos, opts);
-    ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", cam_pub_qos, opts);
+    // don't forget to also register the filter in addFiltersToNodeOptions()
+    auto maybe_filter_chain_radiometry = createFilterChain(
+      "image_temp", {{"radiometry", "flir_boson_usb/RadiometricFilter"}});
+
+    if (!maybe_filter_chain_radiometry.has_value()) {
+      CRAS_ERROR("%s", maybe_filter_chain_radiometry.error().c_str());
+    } else {
+      filter_chain_radiometry_ = std::move(*maybe_filter_chain_radiometry);
+      set_parameters_atomically({
+          rclcpp::Parameter("image_temp.filter1.params.gain", gain_mode_str_),
+          rclcpp::Parameter("image_temp.filter1.params.output_unit", temp_mode_str_)
+      });
+      image_pub_temp_ = image_transport::create_publisher(this, "image_temp", cam_pub_qos_rmw, opts);
+      max_temp_pub_ = this->create_publisher<Temperature>("max_temp", cam_pub_qos, opts);
+      min_temp_pub_ = this->create_publisher<Temperature>("min_temp", cam_pub_qos, opts);
+      ptr_temp_pub_ = this->create_publisher<Temperature>("ptr_temp", cam_pub_qos, opts);
+    }
   }
 #else
   const uint32_t queue_size = static_cast<uint32_t>(queue_size_);
@@ -961,10 +1046,20 @@ void BosonCamera::createPublishers() {
     image_pub_heatmap_ = it_->advertise("image_heatmap", queue_size);
   }
   if (temp) {
-    image_pub_temp_ = it_->advertise("image_temp", queue_size);
-    max_temp_pub_ = nh_.advertise<Temperature>("max_temp", queue_size);
-    min_temp_pub_ = nh_.advertise<Temperature>("min_temp", queue_size);
-    ptr_temp_pub_ = nh_.advertise<Temperature>("ptr_temp", queue_size);
+    auto maybe_filter_chain_radiometry = createFilterChain(
+      "image_temp", {{"radiometry", "flir_boson_usb/RadiometricFilter"}});
+
+    if (!maybe_filter_chain_radiometry.has_value()) {
+      CRAS_ERROR("%s", maybe_filter_chain_radiometry.error().c_str());
+    } else {
+      filter_chain_radiometry_ = std::move(*maybe_filter_chain_radiometry);
+      setParam("image_temp/filter1/params/gain", gain_mode_str_);
+      setParam("image_temp/filter1/params/output_unit", temp_mode_str_);
+      image_pub_temp_ = it_->advertise("image_temp", queue_size);
+      max_temp_pub_ = nh_.advertise<Temperature>("max_temp", queue_size);
+      min_temp_pub_ = nh_.advertise<Temperature>("min_temp", queue_size);
+      ptr_temp_pub_ = nh_.advertise<Temperature>("ptr_temp", queue_size);
+    }
   }
 #endif
 }
@@ -1290,10 +1385,11 @@ void BosonCamera::captureAndPublish() {
   }
 
   ci->header = header;
+  auto raw_msg = cv_img.toImageMsg();
 #ifndef ROS2
-  image_pub_.publish(cv_img.toImageMsg(), ci);
+  image_pub_.publish(raw_msg, ci);
 #else
-  image_pub_.publish(*cv_img.toImageMsg(), *ci);
+  image_pub_.publish(*raw_msg, *ci);
 #endif
 
   if (video_mode_ != Encoding::RAW16 || !processed) {
@@ -1316,17 +1412,14 @@ void BosonCamera::captureAndPublish() {
     image_pub_heatmap_.publish(cv_img.toImageMsg());
   }
 
-  if (outs.temp) {
-    cv_img.image = outs.tempImage;
-    // The unit (and therefore the depth) the stage produced the image in. Both are only changed under the
-    // lock that is held here, so the encoding always matches the pixels.
-    cv_img.encoding = temp_encoding_;
-    image_pub_temp_.publish(cv_img.toImageMsg());
-  }
+  if (temp_mode_ != TempMode::None) {
+    if (filter_chain_radiometry_ && image_pub_temp_) {
+      auto output = std::make_unique<sensor_msgs::msg::Image>();
+      if (filter_chain_radiometry_->update(*raw_msg, *output)) {
+        image_pub_temp_.publish(std::move(output));
+      }
+    }
 
-  // The temperature topics exist exactly when the stage computes absolute values, and they report the
-  // bounds of the stretch the visible pixels were made from.
-  if (radiometric_ && temp_mode_ != TempMode::None) {
     max_temp_msg_.header = header;
     min_temp_msg_.header = header;
     max_temp_msg_.temperature = outs.max_degC;

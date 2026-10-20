@@ -28,6 +28,8 @@ public:
   cras::expected<uint32_t, std::string> getUptime() const;
   cras::expected<bool, std::string> isTelemetryEnabled() const;
   cras::expected<void, std::string> enableTelemetry(bool enable, bool bottom = true, int32_t packing = 0);
+
+  cras::expected<void, std::string> setFFCMode(int32_t mode);
 };
 
 }  // namespace flir_boson_usb
